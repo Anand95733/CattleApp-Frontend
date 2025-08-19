@@ -244,23 +244,27 @@ const BSTabScreen = () => {
       try {
         console.log('🔄 Loading beneficiaries and sellers...');
         
-        // Use parallel API calls for better performance
+        // Use parallel API calls with fallbacks and a safer timeout
         const { beneficiaries: beneficiaryData, sellers: sellerData } = await apiCallParallel({
           beneficiaries: { 
             endpoint: API_CONFIG.ENDPOINTS.BENEFICIARIES,
-            options: { timeout: API_CONFIG.FAST_TIMEOUT }
+            options: { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }
           },
           sellers: { 
             endpoint: API_CONFIG.ENDPOINTS.SELLERS,
-            options: { timeout: API_CONFIG.FAST_TIMEOUT }
+            options: { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }
           }
         });
 
-        console.log('✅ Data loaded successfully');
-        setBeneficiaries(beneficiaryData.results || []);
-        setSellers(sellerData.results || []);
-        setBeneficiaryNextPage(beneficiaryData.next);
-        setSellerNextPage(sellerData.next);
+        // Gracefully handle partial failures
+        if (!beneficiaryData && !sellerData) {
+          throw new Error('Both endpoints failed');
+        }
+
+        setBeneficiaries(beneficiaryData?.results ?? []);
+        setSellers(sellerData?.results ?? []);
+        setBeneficiaryNextPage(beneficiaryData?.next ?? null);
+        setSellerNextPage(sellerData?.next ?? null);
         
         // Animate in
         Animated.timing(fadeAnim, {
@@ -271,7 +275,7 @@ const BSTabScreen = () => {
         
       } catch (error) {
         console.error('❌ Failed to load data:', error);
-        Alert.alert('Error', 'Failed to load data. Please try again.');
+        Alert.alert('Error', 'Failed to load data. Please check your server connection and try again.');
       } finally {
         setLoading(false);
       }
@@ -287,17 +291,19 @@ const BSTabScreen = () => {
     setLoadingMore(true);
     try {
       const endpoint = type === 'beneficiaries' ? API_CONFIG.ENDPOINTS.BENEFICIARIES : API_CONFIG.ENDPOINTS.SELLERS;
-      const response = await apiGet(endpoint, { 
-        params: { page: nextPage.split('page=')[1]?.split('&')[0] },
-        timeout: API_CONFIG.FAST_TIMEOUT 
+      const pageParam = nextPage.split('page=')[1]?.split('&')[0];
+      const url = pageParam ? `${endpoint}?page=${pageParam}` : endpoint;
+
+      const response = await apiGet(url, { 
+        timeout: API_CONFIG.TIMEOUT 
       });
 
       if (type === 'beneficiaries') {
-        setBeneficiaries(prev => [...prev, ...response.results]);
-        setBeneficiaryNextPage(response.next);
+        setBeneficiaries(prev => [...prev, ...(response?.results ?? [])]);
+        setBeneficiaryNextPage(response?.next ?? null);
       } else {
-        setSellers(prev => [...prev, ...response.results]);
-        setSellerNextPage(response.next);
+        setSellers(prev => [...prev, ...(response?.results ?? [])]);
+        setSellerNextPage(response?.next ?? null);
       }
     } catch (error) {
       console.error(`❌ Failed to load more ${type}:`, error);

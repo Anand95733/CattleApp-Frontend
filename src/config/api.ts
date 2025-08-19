@@ -1,7 +1,7 @@
 // API Configuration - Optimized for single working URL
 export const API_CONFIG = {
-  BASE_URL: 'http://192.168.29.21:8000',  // Primary working URL
-  MEDIA_URL: 'http://192.168.29.21:8000/media/',
+  BASE_URL: 'http://192.168.1.6:8000',  // Primary working URL (updated)
+  MEDIA_URL: 'http://192.168.1.6:8000/media/',
   ENDPOINTS: {
     BENEFICIARIES: '/api/beneficiaries/',
     SELLERS: '/api/sellers/',
