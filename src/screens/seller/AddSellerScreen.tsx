@@ -13,8 +13,11 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
-import { API_CONFIG, apiPost } from '../../config/api';
 import { useTheme } from '../../contexts';
+import NetInfo from '@react-native-community/netinfo';
+import { insertSellerLocal } from '../../database/repositories/sellerRepo';
+import OfflineSyncService from '../../services/OfflineSyncService';
+import { API_CONFIG, apiPost } from '../../config/api';
 
 const AddSellerScreen = () => {
   const { theme } = useTheme();
@@ -70,18 +73,32 @@ const AddSellerScreen = () => {
 
     setLoading(true);
 
-    const payload = { ...form };
-
     try {
-      console.log('🔄 Adding seller...');
-      
-      const result = await apiPost(API_CONFIG.ENDPOINTS.SELLERS, payload, { 
-        timeout: API_CONFIG.TIMEOUT 
-      });
+      // Decide online/offline
+      const state = await NetInfo.fetch();
+      const isOnline = Boolean(state.isConnected && state.isInternetReachable !== false);
 
-      console.log('✅ Seller added successfully');
-      Alert.alert('Success', 'Seller added successfully');
-      
+      if (isOnline) {
+        // Online: post to server, but still keep local consistency by inserting synced row later if required
+        const result = await apiPost(API_CONFIG.ENDPOINTS.SELLERS, { ...form }, { timeout: API_CONFIG.TIMEOUT });
+        Alert.alert('Success', 'Seller added successfully');
+      } else {
+        // Offline: insert locally as pending
+        await insertSellerLocal({
+          server_id: null,
+          name: form.name,
+          father_or_husband: form.father_or_husband,
+          village: form.village,
+          mandal: form.mandal,
+          district: form.district,
+          state: form.state,
+          phone_number: form.phone_number,
+        });
+        Alert.alert('Saved Offline', 'Seller will sync automatically when online.');
+        // Trigger background sync attempt (no-op if still offline)
+        OfflineSyncService.getInstance().manualSync().catch(() => {});
+      }
+
       // Reset form
       setForm({
         name: '',
@@ -92,15 +109,20 @@ const AddSellerScreen = () => {
         state: '',
         phone_number: '',
       });
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error adding seller:', error);
-      
-      // Handle validation errors from Django
-      if (error.message.includes('status: 4')) {
-        Alert.alert('Validation Error', 'Please check your input data and try again.');
-      } else {
-        Alert.alert('Network Error', 'Cannot connect to server. Please check your connection and try again.');
-      }
+      // Fallback: store offline if posting failed due to network
+      await insertSellerLocal({
+        server_id: null,
+        name: form.name,
+        father_or_husband: form.father_or_husband,
+        village: form.village,
+        mandal: form.mandal,
+        district: form.district,
+        state: form.state,
+        phone_number: form.phone_number,
+      });
+      Alert.alert('Saved Offline', 'Network issue. Seller saved locally and will sync later.');
     } finally {
       setLoading(false);
     }

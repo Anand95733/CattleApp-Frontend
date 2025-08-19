@@ -23,6 +23,10 @@ import { API_CONFIG, apiGet, buildMediaUrl } from '../../config/api';
 import FastCattleImage from '../../components/FastCattleImage';
 import { perf, usePerformanceTracker } from '../../utils/performance';
 import { useTheme } from '../../contexts';
+import NetInfo from '@react-native-community/netinfo';
+import { getBeneficiaryByServerId, getAllBeneficiaries } from '../../database/repositories/beneficiaryRepo';
+import { getAllCattle } from '../../database/repositories/cattleRepo';
+import { getLocalImageUri, imageExists } from '../../utils/imageStorage';
 // Temporarily disabled: import CattleListItem from '../../components/CattleListItem';
 // Temporarily disabled: import { smartDjangoCall, RequestPriority, prefetchBeneficiaryData } from '../../utils/djangoOptimizer';
 
@@ -86,6 +90,7 @@ const BeneficiaryProfileScreen = () => {
   const [beneficiary, setBeneficiary] = useState<Beneficiary | null>(null);
   const [cattleData, setCattleData] = useState<CattleResponse | null>(null);
   const [cattleLoading, setCattleLoading] = useState(false);
+  const [localCattle, setLocalCattle] = useState<any[] | null>(null);
 
   // Helper function to safely convert values to strings
   const safeString = (value: any): string => {
@@ -146,11 +151,21 @@ const BeneficiaryProfileScreen = () => {
         );
         
         setCattleData(cattleData);
+        setLocalCattle(null); // clear local when server data available
         console.log(`✅ Cattle data loaded: ${cattleData.total_animals} animals`);
         
       } catch (error) {
         console.error('⚠️ Cattle fetch failed (non-critical):', error);
-        // Don't show alert - cattle data is supplementary
+        // Fallback to local cattle when server not available
+        try {
+          const all = await getAllCattle();
+          const filtered = all.filter(c => c.beneficiary_server_id === beneficiary_id);
+          setLocalCattle(filtered);
+          console.log(`📱 Using local cattle: ${filtered.length} animals`);
+        } catch (localErr) {
+          console.error('❌ Failed to load local cattle:', localErr);
+          setLocalCattle([]);
+        }
       } finally {
         setCattleLoading(false);
         perf.end(`BeneficiaryProfile-CattleData-${beneficiary_id}`);
@@ -162,38 +177,54 @@ const BeneficiaryProfileScreen = () => {
       setLoading(true);
       
       try {
-        console.log('🚀 Starting optimized beneficiary profile load...');
+        console.log('🚀 Starting beneficiary profile load...');
         console.log('🔍 Beneficiary ID:', beneficiary_id);
-        console.log('🔗 API Endpoint:', `${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}/`);
-        console.log('🌐 Base URL:', API_CONFIG.BASE_URL);
         
-        // Step 1: Load beneficiary data first
-        const beneficiaryData: Beneficiary = await apiGet(
-          `${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}/`,
-          { 
-            timeout: API_CONFIG.FAST_TIMEOUT,
-            cache: true
+        // Check connectivity first
+        const net = await NetInfo.fetch();
+        const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+        
+        let beneficiaryData: Beneficiary | null = null;
+        
+        if (isOnline) {
+          try {
+            // Try to load from API first when online
+            console.log('🌐 Loading from API...');
+            beneficiaryData = await apiGet(
+              `${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}/`,
+              { 
+                timeout: API_CONFIG.FAST_TIMEOUT,
+                cache: true
+              }
+            );
+            console.log('✅ Beneficiary data loaded from API:', beneficiaryData);
+          } catch (apiError) {
+            console.log('⚠️ API failed, trying local database...');
+            // If API fails, try local database
+            beneficiaryData = await loadFromLocalDatabase();
           }
-        );
+        } else {
+          // Offline: load from local database
+          console.log('📱 Offline - loading from local database...');
+          beneficiaryData = await loadFromLocalDatabase();
+        }
         
-        setBeneficiary(beneficiaryData);
-        console.log('✅ Beneficiary data loaded:', beneficiaryData);
-        
-        // Step 2: Start cattle data fetch immediately (don't wait)
-        fetchCattleDataInternal(); // This runs in background
+        if (beneficiaryData) {
+          setBeneficiary(beneficiaryData);
+          
+          // Try cattle data; if offline or API fails, we'll use local
+          fetchCattleDataInternal();
+        } else {
+          throw new Error('Beneficiary not found in local database or server');
+        }
         
       } catch (error) {
         console.error('💥 Critical beneficiary fetch error:', error);
-        console.error('💥 Error details:', {
-          message: error.message,
-          stack: error.stack,
-          name: error.name
-        });
         
         const errorMessage = error instanceof Error ? error.message : 'Unknown error';
         Alert.alert(
-          'Network Error', 
-          `Failed to load beneficiary profile.\n\nError: ${errorMessage}\n\nPlease check your connection and try again.`,
+          'Error', 
+          `Failed to load beneficiary profile.\n\nError: ${errorMessage}`,
           [
             { text: 'Retry', onPress: fetchAllData },
             { text: 'Cancel', style: 'cancel' }
@@ -208,6 +239,59 @@ const BeneficiaryProfileScreen = () => {
         if (__DEV__) {
           setTimeout(() => perf.report(), 100);
         }
+      }
+    };
+
+    const loadFromLocalDatabase = async (): Promise<Beneficiary | null> => {
+      try {
+        // First try to find by server_id
+        let localBeneficiary = await getBeneficiaryByServerId(beneficiary_id);
+        
+        if (!localBeneficiary) {
+          // If not found by server_id, search all beneficiaries for matching beneficiary_id or local_id
+          const allBeneficiaries = await getAllBeneficiaries();
+          localBeneficiary = allBeneficiaries.find(b => 
+            b.beneficiary_id === beneficiary_id || 
+            String(b.local_id) === beneficiary_id ||
+            b.server_id === beneficiary_id
+          ) || null;
+        }
+        
+        if (localBeneficiary) {
+          console.log('✅ Found beneficiary in local database:', localBeneficiary);
+          
+          // Check if local image exists
+          let imageUrl = null;
+          console.log('📸 [Profile] Checking image for beneficiary:', localBeneficiary.local_image_path);
+          if (localBeneficiary.local_image_path) {
+            const exists = await imageExists(localBeneficiary.local_image_path);
+            console.log('📸 [Profile] Image exists:', exists);
+            if (exists) {
+              imageUrl = getLocalImageUri(localBeneficiary.local_image_path);
+              console.log('📸 [Profile] Local image found:', imageUrl);
+            }
+          }
+          
+          // Map local database fields to UI interface
+          return {
+            beneficiary_id: localBeneficiary.server_id || localBeneficiary.beneficiary_id || String(localBeneficiary.local_id),
+            name: localBeneficiary.name,
+            father_or_husband: localBeneficiary.father_or_husband || '',
+            aadhaar_id: localBeneficiary.aadhaar_id || '',
+            village: localBeneficiary.village || '',
+            mandal: localBeneficiary.mandal || '',
+            district: localBeneficiary.district || '',
+            state: localBeneficiary.state || '',
+            phone_number: parseInt(localBeneficiary.phone_number || '0'),
+            animals_sanctioned: localBeneficiary.num_of_items || 0,
+            beneficiary_image_url: imageUrl,
+          };
+        }
+        
+        return null;
+      } catch (error) {
+        console.error('❌ Local database query failed:', error);
+        return null;
       }
     };
 
@@ -307,9 +391,10 @@ const BeneficiaryProfileScreen = () => {
           {/* Avatar Section */}
           <View style={styles.avatarContainer}>
             {(() => {
-              const imageUrl = buildMediaUrl(beneficiary.beneficiary_image_url);
+              const rawImageUrl = beneficiary.beneficiary_image_url;
+              const imageUrl = rawImageUrl?.startsWith('file://') ? rawImageUrl : buildMediaUrl(rawImageUrl);
               console.log('Beneficiary image URL:', imageUrl);
-              console.log('Raw beneficiary_image:', beneficiary?.beneficiary_image_url);
+              console.log('Raw beneficiary_image:', rawImageUrl);
 
               return imageUrl ? (
                 <Image 
@@ -392,11 +477,15 @@ const BeneficiaryProfileScreen = () => {
                 {cattleLoading && (
                   <ActivityIndicator size="small" color="#6e45e2" style={{ marginRight: 8 }} />
                 )}
-                {cattleData && (
+                {cattleData ? (
                   <Text style={styles.cattleCount}>
                     Total Animals: {cattleData.total_animals}
                   </Text>
-                )}
+                ) : localCattle ? (
+                  <Text style={styles.cattleCount}>
+                    Total Animals (Local): {localCattle.length}
+                  </Text>
+                ) : null}
               </View>
             </View>
             
@@ -501,6 +590,50 @@ const BeneficiaryProfileScreen = () => {
                   </TouchableOpacity>
                   );
                 })}
+              </View>
+            ) : localCattle && localCattle.length > 0 ? (
+              <View style={styles.cattleList}>
+                {localCattle.map((row) => (
+                  <View key={String(row.local_id || Math.random())} style={styles.cattleItem}>
+                    <View style={styles.cattleImageContainer}>
+                      <FastCattleImage
+                        photoUrl={row.front_photo || undefined}
+                        style={styles.cattleImage}
+                        placeholder="No Image"
+                        resizeMode="cover"
+                      />
+                    </View>
+                    <View style={styles.cattleDetails}>
+                      <View style={styles.cattleDetailRow}>
+                        <SafeIcon name="paw-outline" size={14} color={theme.colors.primary} />
+                        <Text style={styles.cattleDetailLabel}>ID:</Text>
+                        <Text style={styles.cattleDetailValue} numberOfLines={1}>
+                          {String(row.local_id || 'local')}
+                        </Text>
+                      </View>
+                      <View style={styles.cattleDetailRow}>
+                        <SafeIcon name="medical-outline" size={14} color={theme.colors.primary} />
+                        <Text style={styles.cattleDetailLabel}>Type:</Text>
+                        <Text style={styles.cattleDetailValue}>{row.type || '-'}</Text>
+                      </View>
+                      <View style={styles.cattleDetailRow}>
+                        <SafeIcon name="ribbon-outline" size={14} color={theme.colors.primary} />
+                        <Text style={styles.cattleDetailLabel}>Breed:</Text>
+                        <Text style={styles.cattleDetailValue}>{row.breed || '-'}</Text>
+                      </View>
+                      {row.tag_no ? (
+                        <View style={styles.cattleDetailRow}>
+                          <SafeIcon name="bookmark-outline" size={14} color={theme.colors.primary} />
+                          <Text style={styles.cattleDetailLabel}>Tag:</Text>
+                          <Text style={styles.cattleDetailValue}>{row.tag_no}</Text>
+                        </View>
+                      ) : null}
+                    </View>
+                    <View style={styles.cattleItemIndicator}>
+                      <SafeIcon name="cloud-upload-outline" size={16} color={theme.colors.warning} />
+                    </View>
+                  </View>
+                ))}
               </View>
             ) : (
               <View style={styles.noCattleContainer}>

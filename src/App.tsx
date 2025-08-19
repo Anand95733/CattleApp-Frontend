@@ -1,6 +1,8 @@
 import React from 'react';
 import AppNavigator from './navigation/AppNavigator';
 import NetworkInitializer from './components/NetworkInitializer';
+import OfflineInitializer from './components/OfflineInitializer';
+import DatabaseInitializer from './components/DatabaseInitializer';
 import { LocationProvider } from './contexts/LocationContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 // Temporarily disabled problematic imports:
@@ -23,7 +25,11 @@ const App = () => {
     <ThemeProvider>
       <LocationProvider>
         <NetworkInitializer>
-          <AppNavigator />
+          <OfflineInitializer>
+            <DatabaseInitializer>
+              <AppNavigator />
+            </DatabaseInitializer>
+          </OfflineInitializer>
         </NetworkInitializer>
       </LocationProvider>
     </ThemeProvider>

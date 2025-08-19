@@ -19,23 +19,32 @@ import {
 } from 'react-native';
 import { TabView, SceneMap, TabBar } from 'react-native-tab-view';
 import Ionicons from 'react-native-vector-icons/Ionicons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../navigation/types';
 import ShimmerPlaceHolder from 'react-native-shimmer-placeholder';
 import LinearGradient from 'react-native-linear-gradient';
-import { API_CONFIG, apiGet, apiCallParallel, buildMediaUrl } from '../config/api';
+import { API_CONFIG, apiGet, buildMediaUrl } from '../config/api';
+import NetInfo from '@react-native-community/netinfo';
+import { getAllBeneficiaries, clearAllBeneficiaries, deleteBeneficiaryByLocalId } from '../database/repositories/beneficiaryRepo';
+import { getAllSellers, clearAllSellers, deleteSellerByLocalId } from '../database/repositories/sellerRepo';
 import { useTheme } from '../contexts';
+import { getLocalImageUri, imageExists } from '../utils/imageStorage';
 
 if (Platform.OS === 'android' && UIManager.setLayoutAnimationEnabledExperimental) {
   UIManager.setLayoutAnimationEnabledExperimental(true);
 }
 
 interface Person {
-  beneficiary_id?: string;
-  seller_id?: string;
+  // Identifiers
+  local_id?: number; // local sqlite row id
+  server_id?: string; // server id if available
+  beneficiary_id?: string; // beneficiary id from API or local
+  seller_id?: string; // seller id from API or local
+  // Basic fields
   name: string;
   phone_number: string;
+  // Images
   beneficiary_image_url?: string | null;
   seller_image_url?: string | null;
 }
@@ -62,6 +71,13 @@ const createStyles = (theme: any) => StyleSheet.create({
     fontSize: 16,
     color: theme.colors.textSecondary,
     fontWeight: '500',
+  },
+  clearDataHint: {
+    fontSize: 12,
+    color: theme.colors.textSecondary,
+    fontStyle: 'italic',
+    marginTop: 4,
+    opacity: 0.7,
   },
   searchContainer: {
     flexDirection: 'row',
@@ -239,50 +255,197 @@ const BSTabScreen = () => {
   const fadeAnim = useState(new Animated.Value(0))[0];
   const searchAnim = useState(new Animated.Value(0))[0];
 
-  useEffect(() => {
-    const fetchData = async () => {
-      try {
-        console.log('🔄 Loading beneficiaries and sellers...');
-        
-        // Use parallel API calls with fallbacks and a safer timeout
-        const { beneficiaries: beneficiaryData, sellers: sellerData } = await apiCallParallel({
-          beneficiaries: { 
-            endpoint: API_CONFIG.ENDPOINTS.BENEFICIARIES,
-            options: { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }
-          },
-          sellers: { 
-            endpoint: API_CONFIG.ENDPOINTS.SELLERS,
-            options: { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }
-          }
+  const fetchData = async () => {
+    try {
+      console.log('🔄 Loading beneficiaries and sellers...');
+
+      // Check connectivity
+      const net = await NetInfo.fetch();
+      const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+
+      if (isOnline) {
+        // Online: load from API with fallback to local data
+        try {
+          console.log('🌐 Fetching data from server...');
+          
+          // Fetch server data in parallel
+          const [beneficiaryData, sellerData] = await Promise.all([
+            apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES, { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }),
+            apiGet(API_CONFIG.ENDPOINTS.SELLERS, { timeout: API_CONFIG.TIMEOUT, useFallbacks: true })
+          ]);
+
+          console.log('✅ Server data received:', {
+            beneficiaries: beneficiaryData?.results?.length ?? 0,
+            sellers: sellerData?.results?.length ?? 0
+          });
+
+          // Set server lists directly (no hidden filters for pure-offline delete)
+          setBeneficiaries(beneficiaryData?.results ?? []);
+          setSellers(sellerData?.results ?? []);
+          setBeneficiaryNextPage(beneficiaryData?.next ?? null);
+          setSellerNextPage(sellerData?.next ?? null);
+        } catch (apiError) {
+          console.error('❌ API call failed, falling back to local data:', apiError);
+          
+          // Fallback to local data when API fails
+          const [localBeneficiaries, localSellers] = await Promise.all([
+            getAllBeneficiaries(),
+            getAllSellers()
+          ]);
+
+          console.log('📱 Fallback to local DB:', { 
+            beneficiaries: localBeneficiaries.length, 
+            sellers: localSellers.length 
+          });
+
+          // Map local rows to UI shape (include IDs for instant offline delete)
+          const mappedBeneficiaries = await Promise.all(
+            localBeneficiaries.map(async (b) => {
+              let imageUrl = null;
+              if (b.local_image_path) {
+                const exists = await imageExists(b.local_image_path);
+                if (exists) imageUrl = getLocalImageUri(b.local_image_path);
+              }
+              return {
+                local_id: b.local_id,
+                beneficiary_id: b.beneficiary_id || (b.server_id ? String(b.server_id) : String(b.local_id)),
+                name: b.name,
+                phone_number: b.phone_number || '',
+                beneficiary_image_url: imageUrl,
+              } as Person;
+            })
+          );
+          setBeneficiaries(mappedBeneficiaries);
+          setSellers(localSellers.map(s => ({
+            local_id: s.local_id,
+            seller_id: s.server_id || String(s.local_id),
+            name: s.name,
+            phone_number: s.phone_number || '',
+            seller_image_url: null,
+          }) as Person));
+
+          setBeneficiaryNextPage(null);
+          setSellerNextPage(null);
+        }
+      } else {
+        // Offline: load from local SQLite
+        const [localBeneficiaries, localSellers] = await Promise.all([
+          getAllBeneficiaries(),
+          getAllSellers()
+        ]);
+
+        console.log('📱 Loaded from local DB:', { 
+          beneficiaries: localBeneficiaries.length, 
+          sellers: localSellers.length 
         });
 
-        // Gracefully handle partial failures
-        if (!beneficiaryData && !sellerData) {
-          throw new Error('Both endpoints failed');
-        }
+        // Map local rows to UI shape (include IDs for robust delete)
+        const mappedBeneficiaries = await Promise.all(
+          localBeneficiaries.map(async (b) => {
+            let imageUrl = null;
+            
+            console.log(`📸 Checking image for ${b.name}:`, b.local_image_path);
+            
+            // Check if local image exists
+            if (b.local_image_path) {
+              const exists = await imageExists(b.local_image_path);
+              console.log(`📸 Image exists for ${b.name}:`, exists);
+              if (exists) {
+                imageUrl = getLocalImageUri(b.local_image_path);
+                console.log(`📸 Image URL for ${b.name}:`, imageUrl);
+              }
+            }
+            
+            return {
+              local_id: b.local_id,
+              server_id: b.server_id || undefined,
+              beneficiary_id: b.beneficiary_id || (b.server_id ? String(b.server_id) : String(b.local_id)),
+              name: b.name,
+              phone_number: b.phone_number || '',
+              beneficiary_image_url: imageUrl,
+            } as Person;
+          })
+        );
+        setBeneficiaries(mappedBeneficiaries);
+        setSellers(localSellers.map(s => ({
+          local_id: s.local_id,
+          server_id: s.server_id || undefined,
+          seller_id: s.server_id || String(s.local_id),
+          name: s.name,
+          phone_number: s.phone_number || '',
+          seller_image_url: null,
+        }) as Person));
 
-        setBeneficiaries(beneficiaryData?.results ?? []);
-        setSellers(sellerData?.results ?? []);
-        setBeneficiaryNextPage(beneficiaryData?.next ?? null);
-        setSellerNextPage(sellerData?.next ?? null);
-        
-        // Animate in
-        Animated.timing(fadeAnim, {
-          toValue: 1,
-          duration: 300,
-          useNativeDriver: true,
-        }).start();
-        
-      } catch (error) {
-        console.error('❌ Failed to load data:', error);
-        Alert.alert('Error', 'Failed to load data. Please check your server connection and try again.');
-      } finally {
-        setLoading(false);
+        setBeneficiaryNextPage(null);
+        setSellerNextPage(null);
       }
-    };
 
+      // Animate in
+      Animated.timing(fadeAnim, {
+        toValue: 1,
+        duration: 300,
+        useNativeDriver: true,
+      }).start();
+    } catch (error) {
+      console.error('❌ Failed to load data:', error);
+      // On any error, try a local fallback before showing any alert
+      try {
+        const [localBeneficiaries, localSellers] = await Promise.all([
+          getAllBeneficiaries(),
+          getAllSellers()
+        ]);
+        
+        // Map beneficiaries with local images
+        const mappedBeneficiaries = await Promise.all(
+          localBeneficiaries.map(async (b) => {
+            let imageUrl = null;
+            
+            console.log(`📸 [Fallback] Checking image for ${b.name}:`, b.local_image_path);
+            
+            // Check if local image exists
+            if (b.local_image_path) {
+              const exists = await imageExists(b.local_image_path);
+              console.log(`📸 [Fallback] Image exists for ${b.name}:`, exists);
+              if (exists) {
+                imageUrl = getLocalImageUri(b.local_image_path);
+                console.log(`📸 [Fallback] Image URL for ${b.name}:`, imageUrl);
+              }
+            }
+            
+            return {
+              beneficiary_id: b.server_id || b.beneficiary_id || String(b.local_id),
+              name: b.name,
+              phone_number: b.phone_number || '',
+              beneficiary_image_url: imageUrl,
+            };
+          })
+        );
+        
+        setBeneficiaries(mappedBeneficiaries);
+        setSellers(localSellers.map(s => ({
+          seller_id: s.server_id || String(s.local_id),
+          name: s.name,
+          phone_number: s.phone_number || '',
+          seller_image_url: null,
+        })));
+      } catch (_) {
+        // If local also fails, then show a gentle message via state instead of alert
+      }
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => {
     fetchData();
   }, []);
+
+  // Refresh data when screen comes into focus
+  useFocusEffect(
+    React.useCallback(() => {
+      fetchData();
+    }, [])
+  );
 
   const loadMoreData = async (type: 'beneficiaries' | 'sellers') => {
     const nextPage = type === 'beneficiaries' ? beneficiaryNextPage : sellerNextPage;
@@ -330,6 +493,86 @@ const BSTabScreen = () => {
     }
   };
 
+  const handleClearData = () => {
+    Alert.alert(
+      'Clear All Local Data',
+      'This will delete all locally stored beneficiaries and sellers. This action cannot be undone. Are you sure?',
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Clear Data',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              console.log('🗑️ Clearing all local data...');
+              await Promise.all([
+                clearAllBeneficiaries(),
+                clearAllSellers(),
+                clearHiddenBeneficiaries(),
+                clearHiddenSellers(),
+              ]);
+              
+              // Reset state
+              setBeneficiaries([]);
+              setSellers([]);
+              
+              console.log('✅ All local data cleared');
+              Alert.alert('Success', 'All local data has been cleared');
+            } catch (error) {
+              console.error('❌ Failed to clear data:', error);
+              Alert.alert('Error', 'Failed to clear data: ' + error.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
+  const handleDeleteItem = (item: Person, type: 'beneficiary' | 'seller') => {
+    Alert.alert(
+      `Delete ${type}`,
+      `Are you sure you want to delete "${item.name}" from local storage? This action cannot be undone.`,
+      [
+        {
+          text: 'Cancel',
+          style: 'cancel',
+        },
+        {
+          text: 'Delete',
+          style: 'destructive',
+          onPress: async () => {
+            try {
+              if (type === 'beneficiary') {
+                if (!item.local_id) {
+                  Alert.alert('Offline only', 'This item comes from server. Please delete it when online in the backend or sync side.');
+                  return;
+                }
+                await deleteBeneficiaryByLocalId(item.local_id);
+                setBeneficiaries(prev => prev.filter(b => b.local_id !== item.local_id));
+              } else {
+                if (!item.local_id) {
+                  Alert.alert('Offline only', 'This item comes from server. Please delete it when online in the backend or sync side.');
+                  return;
+                }
+                await deleteSellerByLocalId(item.local_id);
+                setSellers(prev => prev.filter(s => s.local_id !== item.local_id));
+              }
+              
+              console.log(`✅ ${type} "${item.name}" deleted successfully`);
+              Alert.alert('Success', `${type} deleted successfully`);
+            } catch (error) {
+              console.error(`❌ Failed to delete ${type}:`, error);
+              Alert.alert('Error', `Failed to delete ${type}: ` + error.message);
+            }
+          },
+        },
+      ]
+    );
+  };
+
   const filterData = (data: Person[]) => {
     if (!searchText) return data;
     return data.filter(person => 
@@ -354,6 +597,10 @@ const BSTabScreen = () => {
             navigation.navigate('SellerProfile', { seller_id: personId });
           }
         }}
+        onLongPress={() => {
+          handleDeleteItem(item, isBeneficiary ? 'beneficiary' : 'seller');
+        }}
+        delayLongPress={1000}
         activeOpacity={0.7}
       >
         <LinearGradient
@@ -362,7 +609,7 @@ const BSTabScreen = () => {
         >
           {imageUrl ? (
             <Image 
-              source={{ uri: buildMediaUrl(imageUrl) }} 
+              source={{ uri: imageUrl.startsWith('file://') ? imageUrl : buildMediaUrl(imageUrl) }} 
               style={styles.avatar}
             />
           ) : (
@@ -459,12 +706,19 @@ const BSTabScreen = () => {
     <TouchableWithoutFeedback onPress={Keyboard.dismiss}>
       <View style={styles.container}>
         {/* Header */}
-        <View style={styles.headerContainer}>
+        <TouchableOpacity 
+          style={styles.headerContainer}
+          onLongPress={handleClearData}
+          delayLongPress={2000}
+        >
           <Text style={styles.header}>Directory</Text>
           <Text style={styles.subHeader}>
             {beneficiaries.length} beneficiaries • {sellers.length} sellers
           </Text>
-        </View>
+          <Text style={styles.clearDataHint}>
+            Long press to clear local data
+          </Text>
+        </TouchableOpacity>
 
         {/* Search Bar */}
         <View style={styles.searchContainer}>

@@ -103,6 +103,15 @@ const SettingsScreen = () => {
       onPress: () => setShowNetworkDebug(!showNetworkDebug),
     },
     {
+      title: 'Sync Now',
+      icon: 'sync-outline',
+      onPress: async () => {
+        const { default: OfflineSyncService } = await import('../services/OfflineSyncService');
+        await OfflineSyncService.getInstance().manualSync().catch(() => {});
+        Alert.alert('Sync', 'Manual sync triggered.');
+      }
+    },
+    {
       title: 'Help & Support',
       icon: 'help-circle-outline',
       onPress: () => navigation.navigate('Support' as never),

@@ -1,7 +1,7 @@
 // API Configuration - Optimized for single working URL
 export const API_CONFIG = {
-  BASE_URL: 'http://192.168.1.6:8000',  // Primary working URL (updated)
-  MEDIA_URL: 'http://192.168.1.6:8000/media/',
+  BASE_URL: 'http://127.0.0.1:8000',  // Primary working URL (localhost with ADB forwarding)
+  MEDIA_URL: 'http://127.0.0.1:8000/media/',
   ENDPOINTS: {
     BENEFICIARIES: '/api/beneficiaries/',
     SELLERS: '/api/sellers/',
@@ -16,8 +16,9 @@ export const API_CONFIG = {
   
   // Emergency fallback URLs (only used if primary fails)
   FALLBACK_URLS: [
-    'http://192.168.29.21:8000',  // Primary (current WiFi IP)
-    'http://127.0.0.1:8000',      // Localhost (ADB forwarding)
+    'http://192.168.29.63:8000',  // Current device WiFi IP
+    'http://192.168.1.6:8000',    // Previous WiFi IP
+    'http://192.168.29.21:8000',  // Alternative WiFi IP
     'http://10.0.2.2:8000',       // Android emulator
     'http://192.168.1.11:8000',   // Previous IP (backup)
   ]

@@ -20,6 +20,10 @@ import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
 import ImagePicker from 'react-native-image-crop-picker';
 import { API_CONFIG, buildApiUrl } from '../../config/api';
+import NetInfo from '@react-native-community/netinfo';
+import { insertBeneficiaryLocal } from '../../database/repositories/beneficiaryRepo';
+import { saveImageLocally } from '../../utils/imageStorage';
+import { getDB, forceMigration, resetDatabase } from '../../database/sqlite';
 
 type AddBeneficiaryScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -197,76 +201,141 @@ const AddBeneficiaryScreenFixed = () => {
     setLoading(true);
 
     try {
-      // Create FormData to handle both form data and image
-      const formData = new FormData();
-      
-      // Add form fields
-      formData.append('beneficiary_id', form.beneficiary_id);
-      formData.append('name', form.name);
-      formData.append('father_or_husband', form.father_or_husband);
-      formData.append('aadhaar_id', form.aadhaar_id);
-      formData.append('village', form.village);
-      formData.append('mandal', form.mandal);
-      formData.append('district', form.district);
-      formData.append('state', form.state);
-      formData.append('phone_number', form.phone_number);
-      formData.append('animals_sanctioned', form.animals_sanctioned);
+      // Decide online/offline first
+      const state = await NetInfo.fetch();
+      const isOnline = Boolean(state.isConnected && state.isInternetReachable !== false);
 
-      // Add image if available
-      if (beneficiaryImage) {
-        formData.append('beneficiary_image', {
-          uri: beneficiaryImage,
-          name: 'beneficiary_image.jpg',
-          type: 'image/jpeg',
-        } as any);
-      }
-
-      console.log('Submitting FormData with image:', !!beneficiaryImage);
-      console.log('API URL:', buildApiUrl(API_CONFIG.ENDPOINTS.BENEFICIARIES));
-
-      const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.BENEFICIARIES), {
-        method: 'POST',
-        headers: {
-          'Accept': 'application/json',
-          'Content-Type': 'multipart/form-data',
-        },
-        body: formData,
-      });
-
-      const result = await response.json();
-
-      if (response.ok) {
-        console.log('API Response:', result);
-        console.log('Navigating to profile with ID:', result.beneficiary_id);
-        
-        Alert.alert('Success', 'Beneficiary added successfully');
-        
-        // Reset form
-        setForm({
-          beneficiary_id: '',
-          name: '',
-          father_or_husband: '',
-          aadhaar_id: '',
-          village: '',
-          mandal: '',
-          district: '',
-          state: '',
-          phone_number: '',
-          animals_sanctioned: '0',
-        });
-        setBeneficiaryImage(''); // Reset image
-        
-        navigation.navigate('BeneficiaryProfile', {
-          beneficiary_id: result.beneficiary_id,
-        });
+      if (!isOnline) {
+        // Save offline to SQLite
+        try {
+          // Ensure database schema is up to date
+          try {
+            await forceMigration();
+          } catch (migrationError) {
+            console.error('⚠️ Migration failed, trying database reset:', migrationError);
+            // If migration fails, try resetting the database (for development)
+            try {
+              await resetDatabase();
+              console.log('✅ Database reset successful');
+            } catch (resetError) {
+              console.error('❌ Database reset also failed:', resetError);
+              Alert.alert('Database Error', 'Failed to update database schema. Please restart the app.');
+              return;
+            }
+          }
+          
+          let localImagePath: string | null = null;
+          
+          // Save image locally if provided
+          if (beneficiaryImage) {
+            try {
+              localImagePath = await saveImageLocally(beneficiaryImage, form.beneficiary_id);
+              console.log('📸 Image saved locally:', localImagePath);
+            } catch (imageError) {
+              console.error('⚠️ Failed to save image locally:', imageError);
+              // Continue without image - don't fail the entire save
+            }
+          }
+          
+          await insertBeneficiaryLocal({
+            server_id: null,
+            beneficiary_id: form.beneficiary_id,
+            name: form.name,
+            father_or_husband: form.father_or_husband,
+            aadhaar_id: form.aadhaar_id,
+            village: form.village,
+            mandal: form.mandal,
+            district: form.district,
+            state: form.state,
+            phone_number: form.phone_number,
+            num_of_items: Number(form.animals_sanctioned || '0'),
+            local_image_path: localImagePath,
+          });
+          Alert.alert('Saved Offline', 'Beneficiary will sync automatically when online.');
+          
+          // Reset form after successful save
+          setForm({
+            beneficiary_id: '',
+            name: '',
+            father_or_husband: '',
+            aadhaar_id: '',
+            village: '',
+            mandal: '',
+            district: '',
+            state: '',
+            phone_number: '',
+            animals_sanctioned: '0',
+          });
+          setBeneficiaryImage('');
+          return; // Exit early for offline save
+        } catch (offlineError) {
+          console.error('Offline save failed:', offlineError);
+          Alert.alert('Error', 'Failed to save offline: ' + (offlineError?.message || 'Unknown error'));
+          return;
+        }
       } else {
-        const errorMessage = result.detail || 
-          (result.errors ? JSON.stringify(result.errors) : 'Failed to add beneficiary');
-        Alert.alert('Error', errorMessage);
+        // Online: Create FormData to handle both form data and image
+        const formData = new FormData();
+        
+        // Add form fields
+        formData.append('beneficiary_id', form.beneficiary_id.trim());
+        formData.append('name', form.name.trim());
+        formData.append('father_or_husband', form.father_or_husband.trim());
+        formData.append('aadhaar_id', form.aadhaar_id.trim());
+        formData.append('village', form.village.trim());
+        formData.append('mandal', form.mandal.trim());
+        formData.append('district', form.district.trim());
+        formData.append('state', form.state.trim());
+        
+        // Convert phone number to integer format
+        const phoneNumber = form.phone_number.trim();
+        const phoneInt = phoneNumber && /^\d+$/.test(phoneNumber) ? parseInt(phoneNumber, 10) : 0;
+        formData.append('phone_number', String(phoneInt));
+        
+        // Convert animals_sanctioned to integer format
+        const animalsCount = parseInt(form.animals_sanctioned || '0', 10);
+        formData.append('animals_sanctioned', String(animalsCount));
+  
+        // Add image if available
+        if (beneficiaryImage) {
+          formData.append('beneficiary_image', {
+            uri: beneficiaryImage,
+            name: 'beneficiary_image.jpg',
+            type: 'image/jpeg',
+          } as any);
+        }
+  
+        console.log('Submitting FormData with image:', !!beneficiaryImage);
+        console.log('API URL:', buildApiUrl(API_CONFIG.ENDPOINTS.BENEFICIARIES));
+  
+        const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.BENEFICIARIES), {
+          method: 'POST',
+          headers: {
+            'Accept': 'application/json',
+            // Don't set Content-Type - let fetch set it automatically with boundary
+          },
+          body: formData,
+        });
+  
+        const result = await response.json();
+  
+        if (response.ok) {
+          console.log('API Response:', result);
+          console.log('Navigating to profile with ID:', result.beneficiary_id);
+          
+          Alert.alert('Success', 'Beneficiary added successfully');
+          navigation.navigate('BeneficiaryProfile', {
+            beneficiary_id: result.beneficiary_id,
+          });
+        } else {
+          const errorMessage = result.detail || 
+            (result.errors ? JSON.stringify(result.errors) : 'Failed to add beneficiary');
+          Alert.alert('Error', errorMessage);
+        }
       }
     } catch (error) {
-      Alert.alert('Error', 'Network or server error');
       console.error('Submit error:', error);
+      Alert.alert('Error', 'Something went wrong. Please try again.');
     } finally {
       setLoading(false);
     }

@@ -16,6 +16,8 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
 import { API_CONFIG, apiGet, buildMediaUrl } from '../../config/api';
+import NetInfo from '@react-native-community/netinfo';
+import { getAllBeneficiaries } from '../../database/repositories/beneficiaryRepo';
 
 type BeneficiaryListNavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -39,25 +41,45 @@ const BeneficiaryListScreen = () => {
   useEffect(() => {
     const fetchInitialBeneficiaries = async () => {
       try {
-        console.log('🔄 Fetching beneficiaries...');
-        const data = await apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES, { 
-          cache: true, 
-          timeout: API_CONFIG.FAST_TIMEOUT 
-        });
-        
-        console.log('✅ Beneficiaries data loaded:', data);
-        
-        // Handle paginated response
-        const results = data?.results || data || [];
-        const next = data?.next || null;
-        
-        setBeneficiaries(Array.isArray(results) ? results : []);
-        setNextPage(next);
-        
-        console.log(`📊 Loaded ${results.length} beneficiaries`);
+        const net = await NetInfo.fetch();
+        const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+        if (isOnline) {
+          console.log('🔄 Fetching beneficiaries (online)...');
+          const data = await apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES, { 
+            cache: true, 
+            timeout: API_CONFIG.FAST_TIMEOUT 
+          });
+          const results = data?.results || data || [];
+          const next = data?.next || null;
+          setBeneficiaries(Array.isArray(results) ? results : []);
+          setNextPage(next);
+          console.log(`📊 Loaded ${results.length} beneficiaries`);
+        } else {
+          console.log('📴 Fetching beneficiaries (offline)...');
+          const local = await getAllBeneficiaries();
+          const mapped = local.map((r) => ({
+            beneficiary_id: r.server_id || r.beneficiary_id || `local-${r.local_id}`,
+            name: r.name,
+            phone_number: String(r.phone_number || ''),
+            village: r.village || '',
+            district: r.district || '',
+            beneficiary_image_url: null,
+          }));
+          setBeneficiaries(mapped as any);
+          setNextPage(null);
+        }
       } catch (error) {
         console.error('❌ Failed to fetch beneficiaries:', error);
-        setBeneficiaries([]);
+        const local = await getAllBeneficiaries();
+        const mapped = local.map((r) => ({
+          beneficiary_id: r.server_id || r.beneficiary_id || `local-${r.local_id}`,
+          name: r.name,
+          phone_number: String(r.phone_number || ''),
+          village: r.village || '',
+          district: r.district || '',
+          beneficiary_image_url: null,
+        }));
+        setBeneficiaries(mapped as any);
         setNextPage(null);
       } finally {
         setLoading(false);

@@ -15,8 +15,11 @@ import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
-import { API_CONFIG, apiPost } from '../../config/api';
 import { useTheme } from '../../contexts';
+import NetInfo from '@react-native-community/netinfo';
+import { insertBeneficiaryLocal } from '../../database/repositories/beneficiaryRepo';
+import OfflineSyncService from '../../services/OfflineSyncService';
+import { API_CONFIG, apiPost } from '../../config/api';
 
 type AddBeneficiaryScreenNavigationProp = StackNavigationProp<
   RootStackParamList,
@@ -84,22 +87,38 @@ const AddBeneficiaryScreen = () => {
     setLoading(true);
 
     try {
-      console.log('🔄 Adding beneficiary...');
-      
-      const result = await apiPost(API_CONFIG.ENDPOINTS.BENEFICIARIES, {
-        beneficiary_id: form.beneficiary_id,
-        name: form.name,
-        village: form.village,
-        mandal: form.mandal,
-        district: form.district,
-        state: form.state,
-        phone_number: form.phone_number,
-        num_of_items: parseInt(form.num_of_items, 10),
-      }, { timeout: API_CONFIG.TIMEOUT });
+      const state = await NetInfo.fetch();
+      const isOnline = Boolean(state.isConnected && state.isInternetReachable !== false);
 
-      console.log('✅ Beneficiary added successfully');
-      Alert.alert('Success', 'Beneficiary added successfully');
-      
+      if (isOnline) {
+        const result = await apiPost(API_CONFIG.ENDPOINTS.BENEFICIARIES, {
+          beneficiary_id: form.beneficiary_id,
+          name: form.name,
+          village: form.village,
+          mandal: form.mandal,
+          district: form.district,
+          state: form.state,
+          phone_number: form.phone_number,
+          num_of_items: parseInt(form.num_of_items, 10),
+        }, { timeout: API_CONFIG.TIMEOUT });
+        Alert.alert('Success', 'Beneficiary added successfully');
+        navigation.navigate('BeneficiaryProfile', { beneficiary_id: result.beneficiary_id });
+      } else {
+        await insertBeneficiaryLocal({
+          server_id: null,
+          beneficiary_id: form.beneficiary_id,
+          name: form.name,
+          village: form.village,
+          mandal: form.mandal,
+          district: form.district,
+          state: form.state,
+          phone_number: form.phone_number,
+          num_of_items: Number(form.num_of_items) || 0,
+        });
+        Alert.alert('Saved Offline', 'Beneficiary will sync automatically when online.');
+        OfflineSyncService.getInstance().manualSync().catch(() => {});
+      }
+
       // Reset form
       setForm({
         beneficiary_id: '',
@@ -111,20 +130,20 @@ const AddBeneficiaryScreen = () => {
         phone_number: '',
         num_of_items: '0',
       });
-      
-      navigation.navigate('BeneficiaryProfile', {
-        beneficiary_id: result.beneficiary_id,
-      });
-      
-    } catch (error) {
+    } catch (error: any) {
       console.error('❌ Error adding beneficiary:', error);
-      
-      // Handle validation errors from Django
-      if (error.message.includes('status: 4')) {
-        Alert.alert('Validation Error', 'Please check your input data and try again.');
-      } else {
-        Alert.alert('Network Error', 'Cannot connect to server. Please check your connection and try again.');
-      }
+      await insertBeneficiaryLocal({
+        server_id: null,
+        beneficiary_id: form.beneficiary_id,
+        name: form.name,
+        village: form.village,
+        mandal: form.mandal,
+        district: form.district,
+        state: form.state,
+        phone_number: form.phone_number,
+        num_of_items: Number(form.num_of_items) || 0,
+      });
+      Alert.alert('Saved Offline', 'Network issue. Beneficiary saved locally and will sync later.');
     } finally {
       setLoading(false);
     }

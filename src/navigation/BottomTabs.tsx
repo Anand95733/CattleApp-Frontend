@@ -6,7 +6,7 @@ import { useTheme } from '../contexts';
 import HomeScreen from '../screens/home/HomeScreen';
 import BSTabScreen from '../screens/BSTabScreen';
 import ScanScreen from '../screens/ScanScreen';
-import NearbyScreen from '../screens/NearbyScreen';
+import SyncScreen from '../screens/SyncScreen';
 import SettingsScreen from '../screens/SettingsScreen';
 
 const Tab = createBottomTabNavigator();
@@ -74,8 +74,8 @@ const BottomTabs = () => {
             case 'BSTab':
               iconName = focused ? 'people' : 'people-outline';
               break;
-            case 'Nearby':
-              iconName = focused ? 'location' : 'location-outline';
+            case 'Sync':
+              iconName = focused ? 'sync' : 'sync-outline';
               break;
             case 'Settings':
               iconName = focused ? 'settings' : 'settings-outline';
@@ -138,9 +138,9 @@ const BottomTabs = () => {
         }}
       />
       <Tab.Screen 
-        name="Nearby" 
-        component={NearbyScreen} 
-        options={{ tabBarLabel: 'Nearby' }}
+        name="Sync" 
+        component={SyncScreen} 
+        options={{ tabBarLabel: 'Sync' }}
       />
       <Tab.Screen 
         name="Settings" 

@@ -16,6 +16,8 @@ import { RootStackParamList } from '../../navigation/types';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { API_CONFIG, buildApiUrl } from '../../config/api';
+import NetInfo from '@react-native-community/netinfo';
+import { insertSellerLocal } from '../../database/repositories/sellerRepo';
 
 type AddSellerNavigationProp = StackNavigationProp<RootStackParamList, 'AddSeller'>;
 
@@ -82,40 +84,63 @@ const AddSellerScreenFixed = () => {
     };
 
     try {
-      const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.SELLERS), {
-        method: 'POST',
-        headers: {
-          Accept: 'application/json',
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
+      // Decide online/offline first
+      const state = await NetInfo.fetch();
+      const isOnline = Boolean(state.isConnected && state.isInternetReachable !== false);
 
-      const result = await response.json();
-
-      if (response.ok) {
-        console.log('API Response:', result);
-        console.log('Navigating to profile with ID:', result.seller_id);
-        
-        Alert.alert('Success', 'Seller added successfully');
-        setForm({
-          name: '',
-          father_or_husband: '',
-          aadhaar_id: '',
-          village: '',
-          mandal: '',
-          district: '',
-          state: '',
-          phone_number: '',
-        });
-        navigation.navigate('SellerProfile', {
-          seller_id: result.seller_id,
-        });
+      if (!isOnline) {
+        // Save offline to SQLite
+        try {
+          await insertSellerLocal({
+            server_id: null,
+            name: form.name,
+            father_or_husband: form.father_or_husband,
+            village: form.village,
+            mandal: form.mandal,
+            district: form.district,
+            state: form.state,
+            phone_number: form.phone_number,
+          });
+          Alert.alert('Saved Offline', 'Seller will sync automatically when online.');
+          
+          // Reset form after successful save
+          setForm({
+            name: '',
+            father_or_husband: '',
+            aadhaar_id: '',
+            village: '',
+            mandal: '',
+            district: '',
+            state: '',
+            phone_number: '',
+          });
+          return; // Exit early for offline save
+        } catch (offlineError) {
+          console.error('Offline save failed:', offlineError);
+          Alert.alert('Error', 'Failed to save offline: ' + (offlineError?.message || 'Unknown error'));
+          return;
+        }
       } else {
-        Alert.alert('Error', result.detail || 'Something went wrong');
+        // Online: post to server
+        const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.SELLERS), {
+          method: 'POST',
+          headers: {
+            Accept: 'application/json',
+            'Content-Type': 'application/json',
+          },
+          body: JSON.stringify(payload),
+        });
+        const result = await response.json();
+        if (response.ok) {
+          Alert.alert('Success', 'Seller added successfully');
+          navigation.navigate('SellerProfile', { seller_id: result.seller_id });
+        } else {
+          Alert.alert('Error', result.detail || 'Something went wrong');
+        }
       }
     } catch (error) {
-      Alert.alert('Error', 'Network error or server not reachable');
+      console.error('Submit error:', error);
+      Alert.alert('Error', 'Something went wrong. Please try again.');
     } finally {
       setLoading(false);
     }

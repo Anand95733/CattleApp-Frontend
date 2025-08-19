@@ -17,6 +17,8 @@ import Ionicons from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
 import { RootStackParamList } from '../../navigation/types';
 import { API_CONFIG, apiGet } from '../../config/api';
+import NetInfo from '@react-native-community/netinfo';
+import { getAllSellers } from '../../database/repositories/sellerRepo';
 
 type SellerListNavigationProp = StackNavigationProp<RootStackParamList>;
 
@@ -40,24 +42,58 @@ const SellerListScreen = () => {
   const [searchQuery, setSearchQuery] = useState('');
   const [filteredSellers, setFilteredSellers] = useState<Seller[]>([]);
 
-  // Fetch sellers from API
+  // Fetch sellers with offline fallback
   const fetchSellers = async () => {
     try {
       console.log('🔄 Fetching sellers...');
-      
-      const data = await apiGet(API_CONFIG.ENDPOINTS.SELLERS, { 
-        cache: true, 
-        timeout: API_CONFIG.FAST_TIMEOUT 
-      });
-      
-      const results = data?.results || data || [];
-      setSellers(Array.isArray(results) ? results : []);
-      setFilteredSellers(Array.isArray(results) ? results : []);
-      
-      console.log(`✅ Loaded ${results.length} sellers`);
+
+      const net = await NetInfo.fetch();
+      const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+
+      if (isOnline) {
+        const data = await apiGet(API_CONFIG.ENDPOINTS.SELLERS, { 
+          cache: true, 
+          timeout: API_CONFIG.FAST_TIMEOUT 
+        });
+        const results = data?.results || data || [];
+        setSellers(Array.isArray(results) ? results : []);
+        setFilteredSellers(Array.isArray(results) ? results : []);
+        console.log(`✅ Loaded ${results.length} sellers (online)`);
+      } else {
+        const local = await getAllSellers();
+        // Map local rows to UI shape (seller_id from server_id or local fallback)
+        const mapped = local.map((r) => ({
+          seller_id: r.server_id || `local-${r.local_id}`,
+          name: r.name,
+          father_or_husband: r.father_or_husband || '',
+          aadhaar_id: '',
+          village: r.village || '',
+          mandal: r.mandal || '',
+          district: r.district || '',
+          state: r.state || '',
+          phone_number: Number(r.phone_number || 0),
+        }));
+        setSellers(mapped as any);
+        setFilteredSellers(mapped as any);
+        console.log(`✅ Loaded ${mapped.length} sellers (offline)`);
+      }
     } catch (error) {
       console.error('❌ Failed to fetch sellers:', error);
-      Alert.alert('Network Error', 'Cannot connect to server. Please check your connection and try again.');
+      // Offline fallback if API fails
+      const local = await getAllSellers();
+      const mapped = local.map((r) => ({
+        seller_id: r.server_id || `local-${r.local_id}`,
+        name: r.name,
+        father_or_husband: r.father_or_husband || '',
+        aadhaar_id: '',
+        village: r.village || '',
+        mandal: r.mandal || '',
+        district: r.district || '',
+        state: r.state || '',
+        phone_number: Number(r.phone_number || 0),
+      }));
+      setSellers(mapped as any);
+      setFilteredSellers(mapped as any);
     } finally {
       setLoading(false);
       setRefreshing(false);

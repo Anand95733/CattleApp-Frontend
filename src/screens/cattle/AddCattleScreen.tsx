@@ -10,7 +10,8 @@ import {
   ActivityIndicator,
   PermissionsAndroid,
   Platform,
-  Alert
+  Alert,
+  ToastAndroid
 } from 'react-native';
 import ImagePicker from 'react-native-image-crop-picker';
 import { useRoute, useNavigation } from '@react-navigation/native';
@@ -21,6 +22,10 @@ import { RootStackParamList } from '../../navigation/types';
 import { API_CONFIG, buildApiUrl, apiGet, apiUpload } from '../../config/api';
 import MuzzleDetectionService, { MuzzleImageAnalysis } from '../../services/MuzzleDetectionService';
 import { useTheme } from '../../contexts';
+import NetInfo from '@react-native-community/netinfo';
+import { insertCattleLocal } from '../../database/repositories/cattleRepo';
+import OfflineSyncService from '../../services/OfflineSyncService';
+import { saveCattleImageLocally } from '../../utils/imageStorage';
 
 type AddCattleRouteProp = RouteProp<RootStackParamList, 'AddCattle'>;
 
@@ -840,118 +845,212 @@ const AddCattleScreen = () => {
       return;
     }
 
-    if (!/^[1-9]\d*$/.test(formData.animal_age)) {
+    // Normalize and validate numeric inputs safely
+    const ageStr = (formData.animal_age || '').toString().trim();
+    const ageNum = Number(ageStr);
+    if (!Number.isFinite(ageNum) || ageNum <= 0) {
       Alert.alert('Invalid Input', 'Animal age must be a positive number');
       return;
     }
 
-    // Validate cost and insurance premium are positive numbers
-    if (!/^\d+(\.\d{1,2})?$/.test(formData.cost) || parseFloat(formData.cost) <= 0) {
+    const costStr = (formData.cost || '').toString().trim();
+    const costNum = Number(costStr);
+    if (!Number.isFinite(costNum) || costNum <= 0) {
       Alert.alert('Invalid Input', 'Cost must be a positive number');
       return;
     }
 
-    if (!/^\d+(\.\d{1,2})?$/.test(formData.insurance_premium) || parseFloat(formData.insurance_premium) <= 0) {
+    const insuranceStr = (formData.insurance_premium || '').toString().trim();
+    const insuranceNum = Number(insuranceStr);
+    if (!Number.isFinite(insuranceNum) || insuranceNum <= 0) {
       Alert.alert('Invalid Input', 'Insurance premium must be a positive number');
       return;
     }
 
-    if (!/^\d+(\.\d{1,2})?$/.test(formData.milk_yield_per_day) || parseFloat(formData.milk_yield_per_day) <= 0) {
+    const milkStr = (formData.milk_yield_per_day || '').toString().trim();
+    const milkNum = Number(milkStr);
+    if (!Number.isFinite(milkNum) || milkNum <= 0) {
       Alert.alert('Invalid Input', 'Milk yield per day must be a positive number');
       return;
     }
 
-    // Validate pregnancy months if pregnant
-    if (formData.pregnant && formData.pregnancy_months && (!/^[1-9]\d*$/.test(formData.pregnancy_months) || parseInt(formData.pregnancy_months) > 9)) {
-      Alert.alert('Invalid Input', 'Pregnancy months must be between 1 and 9');
-      return;
+    if (formData.pregnant) {
+      const pmStr = (formData.pregnancy_months || '').toString().trim();
+      if (!pmStr) {
+        Alert.alert('Invalid Input', 'Pregnancy months must be between 1 and 9');
+        return;
+      }
+      const pmNum = Number(pmStr);
+      if (!Number.isInteger(pmNum) || pmNum < 1 || pmNum > 9) {
+        Alert.alert('Invalid Input', 'Pregnancy months must be between 1 and 9');
+        return;
+      }
     }
 
     setSubmitting(true);
     try {
-      const form = new FormData();
-      
-      // Required fields for Django model
-      form.append('beneficiary', formData.beneficiary);
-      form.append('seller', formData.seller);
-      form.append('purchase_place', formData.purchase_place);
-      form.append('cost', formData.cost);
-      form.append('insurance_premium', formData.insurance_premium);
-      form.append('type', formData.type);
-      form.append('breed', formData.breed);
-      form.append('milk_yield_per_day', formData.milk_yield_per_day);
-      form.append('animal_age', formData.animal_age);
-      form.append('pregnant', formData.pregnant.toString());
-      
-      // Optional fields
-      if (formData.pregnant && formData.pregnancy_months) {
-        form.append('pregnancy_months', formData.pregnancy_months);
-      }
-      if (formData.calf_type) {
-        form.append('calf_type', formData.calf_type);
-      }
-      if (formData.tag_no) {
-        form.append('tag_no', formData.tag_no);
-      }
+      // Check connectivity (treat null as offline to avoid hangs)
+      const state = await NetInfo.fetch();
+      const isOnline = state.isConnected === true && state.isInternetReachable === true;
 
-      // Helper function to append images
-      const appendImage = (field: string, uri: string, name: string) => {
-        if (uri) {
-          form.append(field, {
-            uri,
-            name: `${name}.jpg`,
-            type: 'image/jpeg',
-          } as any);
+      if (isOnline) {
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Uploading cattle...', ToastAndroid.SHORT);
         }
-      };
+        const form = new FormData();
+        form.append('beneficiary', formData.beneficiary);
+        form.append('seller', formData.seller);
+        form.append('purchase_place', formData.purchase_place);
+        form.append('cost', formData.cost);
+        form.append('insurance_premium', formData.insurance_premium);
+        form.append('type', formData.type);
+        form.append('breed', formData.breed);
+        form.append('milk_yield_per_day', formData.milk_yield_per_day);
+        form.append('animal_age', formData.animal_age);
+        form.append('pregnant', formData.pregnant.toString());
+        if (formData.pregnant && formData.pregnancy_months) form.append('pregnancy_months', formData.pregnancy_months);
+        if (formData.calf_type) form.append('calf_type', formData.calf_type);
+        if (formData.tag_no) form.append('tag_no', formData.tag_no);
 
-      // Append individual muzzle photos (Django expects separate fields)
-      appendImage('muzzle1_photo', formData.muzzle1_photo, 'muzzle1');
-      appendImage('muzzle2_photo', formData.muzzle2_photo, 'muzzle2');
-      appendImage('muzzle3_photo', formData.muzzle3_photo, 'muzzle3');
-      
-      // Append other photos
-      appendImage('front_photo', formData.front_photo, 'front');
-      appendImage('left_photo', formData.left_photo, 'left');
-      appendImage('right_photo', formData.right_photo, 'right');
+        const appendImage = (field: string, uri: string, name: string) => {
+          if (uri) {
+            form.append(field, { uri, name: `${name}.jpg`, type: 'image/jpeg' } as any);
+          }
+        };
+        appendImage('muzzle1_photo', formData.muzzle1_photo, 'muzzle1');
+        appendImage('muzzle2_photo', formData.muzzle2_photo, 'muzzle2');
+        appendImage('muzzle3_photo', formData.muzzle3_photo, 'muzzle3');
+        appendImage('front_photo', formData.front_photo, 'front');
+        appendImage('left_photo', formData.left_photo, 'left');
+        appendImage('right_photo', formData.right_photo, 'right');
 
-      const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 300000);
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), API_CONFIG.SLOW_TIMEOUT);
+        // Use native fetch for multipart
+        const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.MILCH_ANIMALS), {
+          method: 'POST',
+          headers: { 'Accept': 'application/json' },
+          body: form,
+          signal: controller.signal as any,
+        });
+        clearTimeout(timeout);
+        if (!response.ok) {
+          const err = await response.text();
+          throw new Error(`HTTP ${response.status}: ${err}`);
+        }
+        const data: ApiResponse = await response.json();
 
-      console.log('Submitting cattle data to Django API...');
-      console.log('Form data fields:', Object.keys(form));
+        // Persist synced row locally
+        const { insertCattleSynced } = await import('../../database/repositories/cattleRepo');
+        await insertCattleSynced({
+          server_id: data.animal_id,
+          seller_local_id: null,
+          seller_server_id: formData.seller,
+          beneficiary_local_id: null,
+          beneficiary_server_id: formData.beneficiary,
+          purchase_place: formData.purchase_place,
+          cost: formData.cost,
+          insurance_premium: formData.insurance_premium,
+          type: formData.type,
+          breed: formData.breed,
+          milk_yield_per_day: formData.milk_yield_per_day,
+          animal_age: formData.animal_age,
+          pregnant: formData.pregnant ? 1 : 0,
+          pregnancy_months: formData.pregnancy_months || null,
+          calf_type: formData.calf_type || null,
+          tag_no: formData.tag_no || null,
+          muzzle1_photo: formData.muzzle1_photo,
+          muzzle2_photo: formData.muzzle2_photo,
+          muzzle3_photo: formData.muzzle3_photo,
+          front_photo: formData.front_photo,
+          left_photo: formData.left_photo,
+          right_photo: formData.right_photo,
+        });
 
-      const data: ApiResponse = await apiUpload(
-        API_CONFIG.ENDPOINTS.MILCH_ANIMALS,
-        form,
-        { signal: controller.signal }
-      );
+        // Inform the user quickly on Android, and show a final Alert
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Cattle registered successfully', ToastAndroid.SHORT);
+        }
+        Alert.alert('Success', `Cattle registered successfully!\\n\\nAnimal ID: ${data.animal_id}`,[{ text: 'OK', onPress: () => navigation.goBack() }]);
+      } else {
+        // Offline: save locally and trigger sync
+        if (Platform.OS === 'android') {
+          ToastAndroid.show('Saving offline...', ToastAndroid.SHORT);
+        }
+        console.log('📴 Offline mode: inserting cattle locally...');
+        try {
+          // Proactively ensure tables exist before insert
+          const { forceMigration } = await import('../../database/sqlite');
+          await forceMigration();
 
-      clearTimeout(timeout);
-      
-      console.log('Django API Response:', data);
+          // Simple: store original URIs directly (no file copy) to avoid failures
+          const localId = await insertCattleLocal({
+            server_id: null,
+            seller_local_id: null,
+            seller_server_id: formData.seller || null,
+            beneficiary_local_id: null,
+            beneficiary_server_id: formData.beneficiary || null,
+            purchase_place: formData.purchase_place || null,
+            cost: formData.cost || null,
+            insurance_premium: formData.insurance_premium || null,
+            type: formData.type || null,
+            breed: formData.breed || null,
+            milk_yield_per_day: formData.milk_yield_per_day || null,
+            animal_age: formData.animal_age || null,
+            pregnant: formData.pregnant ? 1 : 0,
+            pregnancy_months: formData.pregnancy_months || null,
+            calf_type: formData.calf_type || null,
+            tag_no: formData.tag_no || null,
+            muzzle1_photo: formData.muzzle1_photo || null,
+            muzzle2_photo: formData.muzzle2_photo || null,
+            muzzle3_photo: formData.muzzle3_photo || null,
+            front_photo: formData.front_photo || null,
+            left_photo: formData.left_photo || null,
+            right_photo: formData.right_photo || null,
+          });
 
-      Alert.alert(
-        'Success',
-        `Cattle registered successfully!\n\nAnimal ID: ${data.animal_id}\nType: ${data.type}\nBreed: ${data.breed}\nBeneficiary: ${data.beneficiary}`,
-        [{ text: 'OK', onPress: () => navigation.goBack() }]
-      );
-    } catch (error: any) {
-      console.error('Submission Error:', error);
-      let errorMessage = 'Failed to register cattle';
-      
-      if (error.name === 'AbortError') {
-        errorMessage = 'Request timed out - please try again';
-      } else if (error.message?.includes('Network request failed') || error.message?.includes('fetch')) {
-        errorMessage = `Network error - Could not connect to server.\n\nTried URLs:\n${API_CONFIG.FALLBACK_URLS.join('\n')}\n\nPlease check your connection and ensure Django server is running.`;
-      } else if (error.message?.includes('HTTP')) {
-        // Handle HTTP errors with more detail
-        errorMessage = `Server error: ${error.message}\n\nPlease try again or contact support.`;
-      } else if (error.message) {
-        errorMessage = error.message;
+          console.log('✅ Offline insert completed with local_id:', localId);
+          OfflineSyncService.getInstance().manualSync().catch(() => {});
+          if (Platform.OS === 'android') {
+            ToastAndroid.show(`Saved offline (ID: ${localId}). Will sync when online.`, ToastAndroid.SHORT);
+          }
+          Alert.alert('Saved Offline', 'Cattle saved locally and will sync automatically.');
+          navigation.goBack();
+        } catch (e:any) {
+          console.error('❌ Offline insert failed:', e?.message || e);
+          Alert.alert('Save Failed', 'Could not save locally. Please try again.');
+        }
       }
-
-      Alert.alert('Registration Failed', errorMessage);
+    } catch (error: any) {
+      // On failure, persist offline as fallback
+      console.warn('Upload failed, saving offline:', error?.message || error);
+      await insertCattleLocal({
+        server_id: null,
+        seller_local_id: null,
+        seller_server_id: formData.seller || null,
+        beneficiary_local_id: null,
+        beneficiary_server_id: formData.beneficiary || null,
+        purchase_place: formData.purchase_place,
+        cost: formData.cost,
+        insurance_premium: formData.insurance_premium,
+        type: formData.type,
+        breed: formData.breed,
+        milk_yield_per_day: formData.milk_yield_per_day,
+        animal_age: formData.animal_age,
+        pregnant: formData.pregnant ? 1 : 0,
+        pregnancy_months: formData.pregnancy_months || null,
+        calf_type: formData.calf_type || null,
+        tag_no: formData.tag_no || null,
+        muzzle1_photo: formData.muzzle1_photo,
+        muzzle2_photo: formData.muzzle2_photo,
+        muzzle3_photo: formData.muzzle3_photo,
+        front_photo: formData.front_photo,
+        left_photo: formData.left_photo,
+        right_photo: formData.right_photo,
+      });
+      OfflineSyncService.getInstance().manualSync().catch(() => {});
+      Alert.alert('Saved Offline', 'Network error. Cattle saved locally and will sync later.');
+      navigation.goBack();
     } finally {
       setSubmitting(false);
     }
