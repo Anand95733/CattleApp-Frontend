@@ -18,6 +18,7 @@ import TestAPIScreen from '../screens/TestAPIScreen';
 import TestConnectionScreen from '../screens/TestConnectionScreen';
 import MuzzleDetectionScreen from '../screens/MuzzleDetectionScreen';
 import { RootStackParamList } from './types';
+import SyncReminder from '../components/SyncReminder';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -47,8 +48,12 @@ const AppNavigator = () => {
   return (
     <NavigationContainer>
       {session ? (
-        <Stack.Navigator screenOptions={{ headerShown: false }}>
-          <Stack.Screen name="MainTabs" component={BottomTabs} />
+        <>
+          {/* Sync reminder only after login */}
+          <SyncReminder />
+          <Stack.Navigator screenOptions={{ headerShown: false }}>
+            
+            <Stack.Screen name="MainTabs" component={BottomTabs} />
           <Stack.Screen name="AddBeneficiary" component={AddBeneficiaryScreenFixed} />
           <Stack.Screen name="AddSeller" component={AddSellerScreenFixed} />
           <Stack.Screen name="AddCattle" component={AddCattleScreen} />
@@ -67,6 +72,7 @@ const AppNavigator = () => {
             options={{ title: 'AI Muzzle Detection' }}
           />
         </Stack.Navigator>
+        </>
       ) : (
         <AuthNavigator />
       )}

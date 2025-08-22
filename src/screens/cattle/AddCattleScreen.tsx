@@ -14,6 +14,9 @@ import {
   ToastAndroid
 } from 'react-native';
 import ImagePicker from 'react-native-image-crop-picker';
+import { Camera, useCameraDevice } from 'react-native-vision-camera';
+import ViewShot from 'react-native-view-shot';
+import RNGetLocation from 'react-native-get-location';
 import { useRoute, useNavigation } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import { Picker } from '@react-native-picker/picker';
@@ -372,18 +375,10 @@ const AddCattleScreen = () => {
     const checkCameraPermission = async () => {
       if (Platform.OS === 'android') {
         try {
-          const granted = await PermissionsAndroid.request(
-            PermissionsAndroid.PERMISSIONS.CAMERA,
-            {
-              title: 'Camera Permission',
-              message: 'App needs access to your camera',
-              buttonNeutral: 'Ask Me Later',
-              buttonNegative: 'Cancel',
-              buttonPositive: 'OK',
-            }
-          );
-          setHasCameraPermission(granted === PermissionsAndroid.RESULTS.GRANTED);
-          setPermissionDenied(granted === PermissionsAndroid.RESULTS.DENIED);
+          // Only check first; request later on action
+          const has = await PermissionsAndroid.check(PermissionsAndroid.PERMISSIONS.CAMERA);
+          setHasCameraPermission(has);
+          setPermissionDenied(false);
         } catch (err) {
           console.warn(err);
           setHasCameraPermission(false);
@@ -397,7 +392,6 @@ const AddCattleScreen = () => {
     // Cleanup function
     return () => {
       _setIsMounted(false);
-      // Clean up rapid capture timer if component unmounts
       if (rapidCaptureTimer) {
         clearTimeout(rapidCaptureTimer);
       }
@@ -459,14 +453,31 @@ const AddCattleScreen = () => {
     setFormData(prev => ({ ...prev, [key]: value }));
   };
 
+  // Vision Camera + burst state
+  const cameraRef = React.useRef<Camera>(null);
+  const device = useCameraDevice('back');
+  const [showCamera, setShowCamera] = useState(false);
+  const [cameraActive, setCameraActive] = useState(false);
+  const [capturingBurst, setCapturingBurst] = useState(false);
+  const [burstProgress, setBurstProgress] = useState(0);
+  const [rawMuzzleImages, setRawMuzzleImages] = useState<string[]>([]);
+
+  // Watermark for front image
+  const frontImageShotRef = React.useRef<ViewShot>(null);
+  const [isWatermarkingFront, setIsWatermarkingFront] = useState(false);
+  const [frontImageReady, setFrontImageReady] = useState(false);
+  const [captureLocation, setCaptureLocation] = useState<{ latitude: number; longitude: number } | null>(null);
+  const [captureDateTime, setCaptureDateTime] = useState<string>('');
+
   const startRapidCapture = () => {
     setIsRapidCapture(true);
     setRapidCaptureCount(0);
     setMuzzleImages([]);
-    captureMuzzleImageRapid();
+    captureMuzzleImageRapid(0, []);
   };
 
-  const captureMuzzleImageRapid = async () => {
+  // Parameterized to avoid stale state between timeouts
+  const captureMuzzleImageRapid = async (currentCount: number, currentImages: string[]) => {
     if (Platform.OS === 'android' && hasCameraPermission === false) {
       const granted = await PermissionsAndroid.request(
         PermissionsAndroid.PERMISSIONS.CAMERA
@@ -491,8 +502,8 @@ const AddCattleScreen = () => {
       });
 
       if (image && image.path) {
-        const newCount = rapidCaptureCount + 1;
-        const newImages = [...muzzleImages, image.path];
+        const newCount = currentCount + 1;
+        const newImages = [...currentImages, image.path];
         setMuzzleImages(newImages);
         setRapidCaptureCount(newCount);
         
@@ -502,7 +513,7 @@ const AddCattleScreen = () => {
         if (newCount < 4) {
           // Short delay before next capture (1 second)
           const timer = setTimeout(() => {
-            captureMuzzleImageRapid();
+            captureMuzzleImageRapid(newCount, newImages);
           }, 1000);
           setRapidCaptureTimer(timer);
         } else {
@@ -517,7 +528,7 @@ const AddCattleScreen = () => {
       setIsRapidCapture(false);
       setRapidCaptureTimer(null);
       
-      if (error.code !== 'E_PICKER_CANCELLED') {
+      if (error?.code !== 'E_PICKER_CANCELLED') {
         Alert.alert('Error', 'Could not capture muzzle image. Please try again.');
         console.error('Muzzle capture error:', error);
       } else {
@@ -533,6 +544,185 @@ const AddCattleScreen = () => {
     if (rapidCaptureTimer) {
       clearTimeout(rapidCaptureTimer);
       setRapidCaptureTimer(null);
+    }
+  };
+
+  // Open Vision Camera and prepare for burst capture
+  const captureMuzzleBurst = async () => {
+    if (Platform.OS === 'android' && hasCameraPermission === false) {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.CAMERA
+      );
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        setPermissionDenied(true);
+        return;
+      }
+      setHasCameraPermission(true);
+    }
+    setShowCamera(true);
+    setCameraActive(true);
+  };
+
+  // Take 4 snapshots rapidly in a single session
+  const takeSnapshot = async () => {
+    if (!cameraRef.current) return;
+
+    setCapturingBurst(true);
+    const newRawImages: string[] = [];
+
+    try {
+      for (let i = 0; i < 4; i++) {
+        setBurstProgress(i + 1);
+
+        const snapshot = await cameraRef.current.takeSnapshot({
+          quality: 85,
+          skipMetadata: true,
+        });
+
+        if (snapshot?.path) {
+          const uri = snapshot.path.startsWith('file://') ? snapshot.path : `file://${snapshot.path}`;
+          newRawImages.push(uri);
+        }
+
+        if (i < 3) {
+          await new Promise(resolve => setTimeout(resolve, 150));
+        }
+      }
+
+      setRawMuzzleImages(newRawImages);
+      setCapturingBurst(false);
+      setBurstProgress(0);
+      setCameraActive(false);
+      setShowCamera(false);
+
+      // Proceed to crop all images one by one
+      cropMuzzleImages(newRawImages);
+    } catch (error) {
+      console.error('Snapshot error:', error);
+      Alert.alert('Error', 'Failed to capture images');
+      setCapturingBurst(false);
+      setBurstProgress(0);
+      setCameraActive(false);
+      setShowCamera(false);
+    }
+  };
+
+  // Crop all muzzle images sequentially, then store to form state
+  const cropMuzzleImages = async (images: string[]) => {
+    try {
+      const croppedImages: string[] = [];
+
+      for (const imageUri of images) {
+        const cropped = await ImagePicker.openCropper({
+          path: imageUri,
+          width: 500,
+          height: 500,
+          cropping: true,
+          cropperCircleOverlay: false,
+          freeStyleCropEnabled: true,
+          mediaType: 'photo',
+          includeBase64: false,
+          compressImageQuality: 0.8,
+        });
+        if (cropped?.path) {
+          croppedImages.push(cropped.path);
+        }
+      }
+
+      if (croppedImages.length > 0) {
+        setMuzzleImages(croppedImages);
+      }
+    } catch (error: any) {
+      if (error?.code !== 'E_PICKER_CANCELLED') {
+        Alert.alert('Error', 'Could not crop images');
+        console.error(error);
+      }
+    }
+  };
+
+  // Capture front image, then watermark with location + datetime via ViewShot
+  const captureFrontImage = async () => {
+    if (Platform.OS === 'android' && hasCameraPermission === false) {
+      const granted = await PermissionsAndroid.request(
+        PermissionsAndroid.PERMISSIONS.CAMERA
+      );
+      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
+        setPermissionDenied(true);
+        return;
+      }
+      setHasCameraPermission(true);
+    }
+
+    try {
+      const image = await ImagePicker.openCamera({
+        width: 800,
+        height: 800,
+        cropping: false,
+        mediaType: 'photo',
+        includeBase64: false,
+        compressImageQuality: 0.8,
+      });
+
+      if (image?.path) {
+        // Set raw image first so the ViewShot content can render
+        setFormData(prev => ({ ...prev, front_photo: image.path }));
+
+        // Prepare watermark data
+        const now = new Date();
+        setCaptureDateTime(now.toLocaleString());
+
+        // Ask for location permission if needed and fetch location
+        try {
+          let locationGranted = true;
+          if (Platform.OS === 'android') {
+            const fine = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_FINE_LOCATION);
+            const coarse = await PermissionsAndroid.request(PermissionsAndroid.PERMISSIONS.ACCESS_COARSE_LOCATION);
+            locationGranted = (fine === PermissionsAndroid.RESULTS.GRANTED) || (coarse === PermissionsAndroid.RESULTS.GRANTED);
+          }
+
+          if (locationGranted) {
+            const loc = await RNGetLocation.getCurrentPosition({ enableHighAccuracy: true, timeout: 20000 });
+            setCaptureLocation({ latitude: loc.latitude, longitude: loc.longitude });
+          } else {
+            setCaptureLocation(null);
+          }
+        } catch (e) {
+          console.warn('Location fetch failed. Proceeding without location.', e);
+          setCaptureLocation(null);
+        }
+
+        // Trigger watermarking UI state to render ViewShot overlay once
+        setIsWatermarkingFront(true);
+        setFrontImageReady(false);
+
+        // Attempt ViewShot capture after small delay to ensure render
+        let attempts = 0;
+        const tryShot = () => {
+          attempts += 1;
+          const ref = frontImageShotRef.current;
+          if (ref) {
+            ref.capture().then(uri => {
+              const finalUri = Platform.OS === 'android' && uri && !uri.startsWith('file://') ? `file://${uri}` : uri;
+              setFormData(prev => ({ ...prev, front_photo: finalUri }));
+            }).catch(err => {
+              console.error('ViewShot capture error:', err);
+              Alert.alert('Warning', 'Watermark capture failed, using original image.');
+            }).finally(() => {
+              setIsWatermarkingFront(false); // Hide overlay after capturing once
+            });
+          } else if (attempts < 5) {
+            setTimeout(tryShot, 600);
+          } else {
+            setIsWatermarkingFront(false);
+          }
+        };
+        setTimeout(tryShot, 800);
+      }
+    } catch (error: any) {
+      if (error?.code !== 'E_PICKER_CANCELLED') {
+        Alert.alert('Error', 'Could not capture image');
+        console.error(error);
+      }
     }
   };
 
@@ -740,42 +930,7 @@ const AddCattleScreen = () => {
     }
   };
 
-  const captureFrontImage = async () => {
-    if (Platform.OS === 'android' && hasCameraPermission === false) {
-      const granted = await PermissionsAndroid.request(
-        PermissionsAndroid.PERMISSIONS.CAMERA
-      );
-      if (granted !== PermissionsAndroid.RESULTS.GRANTED) {
-        setPermissionDenied(true);
-        return;
-      }
-      setHasCameraPermission(true);
-    }
 
-    try {
-      const image = await ImagePicker.openCamera({
-        width: 800,
-        height: 800,
-        cropping: false,
-        mediaType: 'photo',
-        includeBase64: true,
-        compressImageQuality: 0.8,
-      });
-
-      if (image) {
-        setFormData(prev => ({
-          ...prev,
-          front_photo: image.path,
-        }));
-        setFrontImageCaptured(true);
-      }
-    } catch (error: any) {
-      if (error.code !== 'E_PICKER_CANCELLED') {
-        Alert.alert('Error', 'Could not capture image');
-        console.error(error);
-      }
-    }
-  };
 
   const handleImagePick = async (field: keyof FormData) => {
     if (Platform.OS === 'android' && hasCameraPermission === false) {
@@ -1246,7 +1401,7 @@ const AddCattleScreen = () => {
                 <View style={styles.captureOptionsContainer}>
                   <TouchableOpacity
                     style={styles.primaryButton}
-                    onPress={startRapidCapture}
+                    onPress={captureMuzzleBurst}
                     disabled={permissionDenied}
                   >
                     <Text style={styles.buttonText}>🚀 Quick Capture (4 photos)</Text>
@@ -1298,7 +1453,47 @@ const AddCattleScreen = () => {
       
       {formData.front_photo ? (
         <View style={styles.imageColumn}>
-          <Image source={{ uri: formData.front_photo }} style={styles.largeImage} />
+          {/* Show plain image normally */}
+          {!isWatermarkingFront && (
+            <Image source={{ uri: formData.front_photo }} style={styles.largeImage} />
+          )}
+
+          {/* Show overlay only during watermarking to avoid duplicate text */}
+          {isWatermarkingFront && (
+            <ViewShot
+              ref={frontImageShotRef}
+              options={{ format: 'jpg', quality: 0.9, result: 'tmpfile' }}
+              style={{ width: 300, height: 300 }}
+            >
+              <View style={{ width: 300, height: 300 }}>
+                <Image
+                  source={{ uri: formData.front_photo }}
+                  style={{ width: 300, height: 300, borderRadius: 8, borderWidth: 2, borderColor: '#6e45e2' }}
+                  onLoad={() => setFrontImageReady(true)}
+                  resizeMode="cover"
+                />
+                <View style={{
+                  position: 'absolute',
+                  bottom: 12,
+                  left: 12,
+                  paddingVertical: 6,
+                  paddingHorizontal: 10,
+                  backgroundColor: 'rgba(0,0,0,0.6)',
+                  borderRadius: 6
+                }}>
+                  <Text style={{ color: '#fff', fontSize: 12 }}>
+                    {captureDateTime || ''}
+                  </Text>
+                  {!!captureLocation && (
+                    <Text style={{ color: '#fff', fontSize: 12 }}>
+                      Lat: {captureLocation.latitude.toFixed(5)}, Long: {captureLocation.longitude.toFixed(5)}
+                    </Text>
+                  )}
+                </View>
+              </View>
+            </ViewShot>
+          )}
+
           <View style={styles.buttonRow}>
             <TouchableOpacity
               style={styles.secondaryButton}
@@ -1367,6 +1562,78 @@ const AddCattleScreen = () => {
       )}
     </>
   );
+
+  // Save locally when offline and trigger sync when online
+  const onSubmitCattle = async () => {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      const required = (cond: boolean, msg: string) => { if (!cond) throw new Error(msg); };
+      required(!!formData.seller?.trim(), 'Seller ID is required');
+      required(!!formData.purchase_place?.trim(), 'Purchase place is required');
+      required(!!formData.cost?.trim(), 'Cost is required');
+      required(!!formData.insurance_premium?.trim(), 'Insurance premium is required');
+      required(!!formData.type?.trim(), 'Animal type is required');
+      required(!!formData.breed?.trim(), 'Breed is required');
+      required(!!formData.milk_yield_per_day?.trim(), 'Milk yield per day is required');
+      required(!!formData.animal_age?.trim(), 'Animal age is required');
+      required(muzzleImages.length >= 3, 'Please capture 3 muzzle images');
+      required(!!formData.front_photo, 'Front image is required');
+      required(!!formData.left_photo && !!formData.right_photo, 'Left and Right images are required');
+
+      const bId = formData.beneficiary || formData.beneficiary_id || 'unknown';
+      const localM1 = await saveCattleImageLocally(muzzleImages[0], bId, 'muzzle1');
+      const localM2 = await saveCattleImageLocally(muzzleImages[1], bId, 'muzzle2');
+      const localM3 = await saveCattleImageLocally(muzzleImages[2], bId, 'muzzle3');
+      const localFront = await saveCattleImageLocally(formData.front_photo, bId, 'front');
+      const localLeft = await saveCattleImageLocally(formData.left_photo, bId, 'left');
+      const localRight = await saveCattleImageLocally(formData.right_photo, bId, 'right');
+
+      await insertCattleLocal({
+        server_id: null,
+        seller_local_id: null,
+        seller_server_id: formData.seller?.trim() || null,
+        beneficiary_local_id: null,
+        beneficiary_server_id: formData.beneficiary?.trim() || null,
+        purchase_place: formData.purchase_place || null,
+        cost: formData.cost || null,
+        insurance_premium: formData.insurance_premium || null,
+        type: formData.type || null,
+        breed: formData.breed || null,
+        milk_yield_per_day: formData.milk_yield_per_day || null,
+        animal_age: formData.animal_age || null,
+        pregnant: formData.pregnant ? 1 : 0,
+        pregnancy_months: formData.pregnancy_months || null,
+        calf_type: formData.calf_type || null,
+        tag_no: formData.tag_no || null,
+        muzzle1_photo: localM1,
+        muzzle2_photo: localM2,
+        muzzle3_photo: localM3,
+        front_photo: localFront,
+        left_photo: localLeft,
+        right_photo: localRight,
+      });
+
+      const net = await NetInfo.fetch();
+      const online = Boolean(net.isConnected && net.isInternetReachable !== false);
+      if (online) {
+        try { await OfflineSyncService.getInstance().manualSync(); } catch {}
+      }
+
+      if (Platform.OS === 'android') {
+        ToastAndroid.show('Cattle saved locally for sync', ToastAndroid.SHORT);
+      } else {
+        Alert.alert('Success', 'Cattle saved locally for sync');
+      }
+      (navigation as any).goBack();
+    } catch (e: any) {
+      const msg = e?.message || 'Failed to save cattle. Please try again.';
+      Alert.alert('Error', msg);
+      console.error('Register cattle failed:', e);
+    } finally {
+      setSubmitting(false);
+    }
+  };
 
   const renderFormStep = () => (
     <>
@@ -1567,7 +1834,7 @@ const AddCattleScreen = () => {
         </TouchableOpacity>
         <TouchableOpacity
           style={styles.primaryButton}
-          onPress={handleSubmit}
+          onPress={onSubmitCattle}
           disabled={submitting}
         >
           {submitting ? (
@@ -1654,28 +1921,60 @@ const AddCattleScreen = () => {
   }
 
   return (
-    <ScrollView contentContainerStyle={styles.container}>
-      <View style={styles.header}>
-        <TouchableOpacity onPress={() => navigation.goBack()}>
-          <Ionicons name="arrow-back" size={24} color="#000" />
-        </TouchableOpacity>
-        <Text style={styles.headerTitle}>Register Cattle</Text>
-      </View>
-      {permissionDenied && (
-        <View style={styles.permissionBanner}>
-          <Ionicons name="warning" size={20} color="white" />
-          <Text style={styles.permissionBannerText}>
-            Camera permission is required. Please enable it in device settings.
-          </Text>
+    <>
+      {/* Fullscreen Vision Camera overlay for burst mode */}
+      {showCamera && device ? (
+        <View style={{ position: 'absolute', top: 0, right: 0, bottom: 0, left: 0, backgroundColor: 'black', zIndex: 9999 }}>
+          <Camera
+            ref={cameraRef}
+            style={{ flex: 1 }}
+            device={device}
+            isActive={cameraActive}
+            photo={true}
+          />
+          <View style={{ position: 'absolute', bottom: 40, width: '100%', alignItems: 'center' }}>
+            <TouchableOpacity
+              onPress={takeSnapshot}
+              disabled={capturingBurst}
+              style={{ backgroundColor: '#ffffff', paddingVertical: 14, paddingHorizontal: 30, borderRadius: 30 }}
+            >
+              <Text style={{ color: '#000', fontWeight: 'bold' }}>
+                {capturingBurst ? `Capturing ${burstProgress}/4` : 'Take 4 Photos'}
+              </Text>
+            </TouchableOpacity>
+            <TouchableOpacity
+              onPress={() => { setShowCamera(false); setCameraActive(false); }}
+              style={{ marginTop: 10 }}
+            >
+              <Text style={{ color: '#fff' }}>Cancel</Text>
+            </TouchableOpacity>
+          </View>
         </View>
-      )}
-      
-      {/* Step Progress Indicator */}
-      {renderStepIndicator()}
-      
-      {/* Current Step Content */}
-      {renderCurrentStep()}
-    </ScrollView>
+      ) : null}
+
+      <ScrollView contentContainerStyle={styles.container}>
+        <View style={styles.header}>
+          <TouchableOpacity onPress={() => navigation.goBack()}>
+            <Ionicons name="arrow-back" size={24} color="#000" />
+          </TouchableOpacity>
+          <Text style={styles.headerTitle}>Register Cattle</Text>
+        </View>
+        {permissionDenied && (
+          <View style={styles.permissionBanner}>
+            <Ionicons name="warning" size={20} color="white" />
+            <Text style={styles.permissionBannerText}>
+              Camera permission is required. Please enable it in device settings.
+            </Text>
+          </View>
+        )}
+        
+        {/* Step Progress Indicator */}
+        {renderStepIndicator()}
+        
+        {/* Current Step Content */}
+        {renderCurrentStep()}
+      </ScrollView>
+    </>
   );
 };
 

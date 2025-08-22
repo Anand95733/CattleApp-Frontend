@@ -3,6 +3,7 @@ import AppNavigator from './navigation/AppNavigator';
 import NetworkInitializer from './components/NetworkInitializer';
 import OfflineInitializer from './components/OfflineInitializer';
 import DatabaseInitializer from './components/DatabaseInitializer';
+import SyncReminder from './components/SyncReminder';
 import { LocationProvider } from './contexts/LocationContext';
 import { ThemeProvider } from './contexts/ThemeContext';
 // Temporarily disabled problematic imports:

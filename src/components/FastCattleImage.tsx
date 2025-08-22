@@ -21,25 +21,34 @@ const FastCattleImage: React.FC<FastCattleImageProps> = ({
 }) => {
   const [imageError, setImageError] = useState(false);
 
-  // Simple URL building
+  // Build image URI for both server and local files
   const getImageUrl = (url: string | undefined): string | null => {
     if (!url || url.trim() === '') return null;
-    
+
     const cleanUrl = url.trim();
-    
-    // If it's already a full URL, replace localhost with configured IP
+
+    // Local file or content URIs
+    if (
+      cleanUrl.startsWith('file://') ||
+      cleanUrl.startsWith('content://') ||
+      cleanUrl.startsWith('/') // absolute filesystem path on Android
+    ) {
+      return cleanUrl.startsWith('file://') ? cleanUrl : `file://${cleanUrl}`;
+    }
+
+    // Remote URLs: normalize base host
     if (cleanUrl.startsWith('http://') || cleanUrl.startsWith('https://')) {
       return cleanUrl
         .replace('http://127.0.0.1:8000', API_CONFIG.BASE_URL)
         .replace('http://localhost:8000', API_CONFIG.BASE_URL);
     }
-    
-    // If it starts with /media/, combine with base URL
+
+    // Django media relative paths
     if (cleanUrl.startsWith('/media/')) {
       return `${API_CONFIG.BASE_URL}${cleanUrl}`;
     }
-    
-    // Otherwise, assume it's a relative path
+
+    // Fallback: treat as media path segment
     return `${API_CONFIG.BASE_URL}/media/${cleanUrl}`;
   };
 
