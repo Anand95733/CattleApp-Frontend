@@ -19,6 +19,8 @@ const SyncScreen = () => {
   const [totalCounts, setTotalCounts] = useState({ sellers: 0, beneficiaries: 0, cattle: 0 });
   const [lastSyncedAt, setLastSyncedAt] = useState<string | null>(null);
   const [syncing, setSyncing] = useState<boolean>(false);
+  const [syncStatus, setSyncStatus] = useState<string>('');
+  const [syncError, setSyncError] = useState<string | null>(null);
 
   const loadCounts = useCallback(async () => {
     setLoading(true);
@@ -98,6 +100,11 @@ const SyncScreen = () => {
     const sub = NetInfo.addEventListener((state) => {
       setOnline(Boolean(state.isConnected && state.isInternetReachable !== false));
     });
+    // Subscribe to sync status events
+    const off = OfflineSyncService.getInstance().onStatus((e) => {
+      setSyncStatus(e.message);
+      setSyncError(e.error ?? null);
+    });
     // Start initial load
     loadCounts();
     // Periodic refresh to reflect background sync progress
@@ -106,6 +113,7 @@ const SyncScreen = () => {
     OfflineSyncService.getInstance().start();
     return () => {
       sub && sub();
+      off && off();
       clearInterval(interval);
     };
   }, [loadCounts]);
@@ -183,7 +191,7 @@ const SyncScreen = () => {
           <Text style={styles.cardTitle}>Sync Queue</Text>
         </View>
         <Text style={styles.cardSubtitle}>
-          {totalPending > 0 ? 'Data waiting to sync to server' : 'All data is synced'}
+          {syncError ? `Error: ${syncError}` : (syncStatus || (totalPending > 0 ? 'Data waiting to sync to server' : 'All data is synced'))}
         </Text>
         
         <View style={styles.dataRow}> 

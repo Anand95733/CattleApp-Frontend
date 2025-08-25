@@ -24,7 +24,7 @@ import { RouteProp } from '@react-navigation/native';
 import { RootStackParamList } from '../../navigation/types';
 import { API_CONFIG, buildApiUrl, apiGet, apiUpload } from '../../config/api';
 import MuzzleDetectionService, { MuzzleImageAnalysis } from '../../services/MuzzleDetectionService';
-import { useTheme } from '../../contexts';
+import { useLocation, useTheme } from '../../contexts';
 import NetInfo from '@react-native-community/netinfo';
 import { insertCattleLocal } from '../../database/repositories/cattleRepo';
 import OfflineSyncService from '../../services/OfflineSyncService';
@@ -33,38 +33,32 @@ import { saveCattleImageLocally } from '../../utils/imageStorage';
 type AddCattleRouteProp = RouteProp<RootStackParamList, 'AddCattle'>;
 
 interface FormData {
-  // Required fields matching Django model
-  beneficiary: string;           // UUID of beneficiary
-  seller: string;               // UUID of seller
-  purchase_place: string;
-  cost: string;
-  insurance_premium: string;
-  type: string;                 // Buffalo/Cow
-  breed: string;                // Murrah/Mehsana/etc.
-  milk_yield_per_day: string;
-  animal_age: string;
-  
-  // Optional fields
-  pregnant: boolean;
-  pregnancy_months: string;
-  calf_type: string;           // Male/Female
-  tag_no: string;
-  
-  // Image fields - individual muzzle images
-  muzzle1_photo: string;
-  muzzle2_photo: string;
-  muzzle3_photo: string;
-  front_photo: string;
-  left_photo: string;
-  right_photo: string;
-  
-  // Legacy fields for backward compatibility
-  beneficiary_id: string;      // Will map to beneficiary
+  // AppCattle-aligned fields
+  beneficiary_id: string;
+  seller_id: string;
+  type: 'Buffalo' | 'Cow';
+  breed: string;
+  age: string;
   state: string;
   district: string;
   mandal: string;
   village: string;
-  muzzle_images: string[];     // Will split into individual muzzle photos
+  front_image: string;
+  left_image: string;
+  right_image: string;
+  muzzle_images: string[];
+  purchase_place: string;
+  cost: string;
+  insurance_premium: string;
+  pregnant: boolean;
+  pregnancy_months: string;
+  gender: 'Male' | 'Female';
+  calf_type: 'Male' | 'Female' | 'None';
+  milk_yield_per_day: string;
+  tag_no: string;
+  tag_photo: string;
+  health_cert: string;
+  valuation_cert: string;
 }
 
 interface ApiResponse {
@@ -305,41 +299,45 @@ const AddCattleScreen = () => {
   const route = useRoute<AddCattleRouteProp>();
   const navigation = useNavigation();
   const { beneficiary_id } = route.params;
+  const { 
+    locationState, 
+    setSelectedDistrict, 
+    setSelectedMandal, 
+    setSelectedVillage,
+    getAllDistricts,
+    getMandalsByDistrict,
+    getVillagesByMandal
+  } = useLocation();
   
   // Create dynamic styles
   const styles = createStyles(theme);
 
+  // Update FormData schema to match AppCattle version
   const [formData, setFormData] = useState<FormData>({
-    // Django model fields
-    beneficiary: beneficiary_id,
-    seller: '',
-    purchase_place: '',
+    beneficiary_id,
+    seller_id: '',
+    type: 'Cow',
+    breed: '',
+    age: '',
+    state: 'TS',
+    district: locationState.selectedDistrict,
+    mandal: locationState.selectedMandal,
+    village: locationState.selectedVillage,
+    front_image: '',
+    left_image: '',
+    right_image: '',
+    muzzle_images: [],
     cost: '',
     insurance_premium: '',
-    type: '',
-    breed: '',
     pregnant: false,
     pregnancy_months: '',
-    calf_type: '',
+    gender: 'Female',
+    calf_type: 'None',
     milk_yield_per_day: '',
     tag_no: '',
-    animal_age: '',
-    
-    // Individual muzzle photos
-    muzzle1_photo: '',
-    muzzle2_photo: '',
-    muzzle3_photo: '',
-    front_photo: '',
-    left_photo: '',
-    right_photo: '',
-    
-    // Legacy fields for backward compatibility
-    beneficiary_id,
-    state: '',
-    district: '',
-    mandal: '',
-    village: '',
-    muzzle_images: [],
+    tag_photo: '',
+    health_cert: '',
+    valuation_cert: '',
   });
 
   const [currentStep, setCurrentStep] = useState<number>(1); // 1: Muzzles, 2: Front, 3: Sides, 4: Form
@@ -365,10 +363,31 @@ const AddCattleScreen = () => {
   const [rapidCaptureCount, setRapidCaptureCount] = useState<number>(0);
   const [rapidCaptureTimer, setRapidCaptureTimer] = useState<NodeJS.Timeout | null>(null);
   
-  const [filteredDistricts, setFilteredDistricts] = useState<{id: string, name: string}[]>([]);
-  const [filteredMandal, setFilteredMandal] = useState<{id: string, name: string}[]>([]);
-  const [filteredVillage, setFilteredVillage] = useState<{id: string, name: string}[]>([]);
+  const [filteredDistricts, setFilteredDistricts] = useState<{id: string, name: string}[]>(getAllDistricts());
+  const [filteredMandal, setFilteredMandal] = useState<{id: string, name: string}[]>(locationState.selectedDistrict ? getMandalsByDistrict(locationState.selectedDistrict) : []);
+  const [filteredVillage, setFilteredVillage] = useState<{id: string, name: string}[]>(locationState.selectedMandal ? getVillagesByMandal(locationState.selectedMandal) : []);
   const [_isMounted, _setIsMounted] = useState<boolean>(true);
+  const [locationConfirmed, setLocationConfirmed] = useState<boolean>(false);
+
+  // Sync local form with global location changes (when user changed in Home/Seller/Beneficiary)
+  useEffect(() => {
+    // Prefill from global; if village not set in global, default to 0th when mandal available
+    const nextDistrict = locationState.selectedDistrict || '';
+    const mandals = nextDistrict ? getMandalsByDistrict(nextDistrict) : [];
+    const nextMandal = locationState.selectedMandal || (mandals.length > 0 ? mandals[0].id : '');
+    const villages = nextMandal ? getVillagesByMandal(nextMandal) : [];
+    const nextVillage = locationState.selectedVillage || (villages.length > 0 ? villages[0].id : '');
+
+    setFilteredMandal(mandals);
+    setFilteredVillage(villages);
+
+    setFormData(prev => ({
+      ...prev,
+      district: nextDistrict,
+      mandal: nextMandal,
+      village: nextVillage,
+    }));
+  }, [locationState.selectedDistrict, locationState.selectedMandal, locationState.selectedVillage, getMandalsByDistrict, getVillagesByMandal]);
 
   // Check camera permission on mount and cleanup on unmount
   useEffect(() => {
@@ -398,59 +417,79 @@ const AddCattleScreen = () => {
     };
   }, []);
 
-  // Filter districts based on selected state
+  // Update districts when state changes so subsequent Mandal/Village lists are scoped correctly
   useEffect(() => {
-    if (formData.state) {
-      const districts = districtsByState[formData.state as keyof typeof districtsByState] || [];
-      setFilteredDistricts(districts);
-      setFormData(prev => ({ ...prev, district: '', mandal: '', village: '' }));
-    } else {
-      setFilteredDistricts([]);
-      setFilteredMandal([]);
-      setFilteredVillage([]);
-      setFormData(prev => ({ ...prev, district: '', mandal: '', village: '' }));
-    }
+    const districts = (districtsByState as any)[formData.state] || [];
+    setFilteredDistricts(districts);
+    // Reset dependent fields when state changes
+    setFormData(prev => ({ ...prev, district: '', mandal: '', village: '' }));
   }, [formData.state]);
 
-  // Filter mandals based on selected district
+  // Update mandals when district changes (TS via context; others via local data)
   useEffect(() => {
     if (formData.district) {
-      const districtData = mandalVillageData[formData.district as keyof typeof mandalVillageData];
-      if (districtData) {
-        setFilteredMandal(districtData.mandals);
-        setFormData(prev => ({ ...prev, mandal: '', village: '' }));
-      } else {
-        setFilteredMandal([]);
-        setFilteredVillage([]);
-        setFormData(prev => ({ ...prev, mandal: '', village: '' }));
-      }
+      const mandals = formData.state === 'TS'
+        ? getMandalsByDistrict(formData.district)
+        : ((mandalVillageData as any)[formData.district]?.mandals || []);
+      setFilteredMandal(mandals);
+      setFormData(prev => ({ ...prev, mandal: '', village: '' }));
     } else {
       setFilteredMandal([]);
       setFilteredVillage([]);
       setFormData(prev => ({ ...prev, mandal: '', village: '' }));
     }
-  }, [formData.district]);
+  }, [formData.state, formData.district, getMandalsByDistrict]);
 
-  // Filter villages based on selected mandal
+  // Update villages when mandal changes (TS via context; others via local data)
   useEffect(() => {
-    if (formData.mandal && formData.district) {
-      const districtData = mandalVillageData[formData.district as keyof typeof mandalVillageData];
-      if (districtData) {
-        const villages = districtData.villages[formData.mandal as keyof typeof districtData.villages] || [];
+    if (formData.mandal) {
+      if (formData.state === 'TS') {
+        setSelectedMandal(formData.mandal);
+        const villages = getVillagesByMandal(formData.mandal);
         setFilteredVillage(villages);
-        setFormData(prev => ({ ...prev, village: '' }));
       } else {
-        setFilteredVillage([]);
-        setFormData(prev => ({ ...prev, village: '' }));
+        const villages = ((mandalVillageData as any)[formData.district]?.villages?.[formData.mandal]) || [];
+        setFilteredVillage(villages);
       }
+      setFormData(prev => ({ ...prev, village: '' }));
     } else {
       setFilteredVillage([]);
       setFormData(prev => ({ ...prev, village: '' }));
     }
-  }, [formData.mandal, formData.district]);
+  }, [formData.state, formData.district, formData.mandal, getVillagesByMandal, setSelectedMandal]);
+
+  // When global villages update for the current mandal, reflect them here
+  useEffect(() => {
+    if (locationState.selectedMandal && locationState.selectedMandal === formData.mandal) {
+      if (locationState.villages && locationState.villages.length) {
+        setFilteredVillage(locationState.villages);
+        if (!formData.village || !locationState.villages.some(v => v.id === formData.village)) {
+          setFormData(prev => ({ ...prev, village: locationState.villages[0].id }));
+        }
+      }
+    }
+  }, [locationState.villages, locationState.selectedMandal]);
 
   const handleInputChange = (key: keyof FormData, value: string | boolean) => {
-    setFormData(prev => ({ ...prev, [key]: value }));
+    if (key === 'state') {
+      const next = String(value);
+      setFormData(prev => ({ ...prev, state: next, district: '', mandal: '', village: '' }));
+      // No global update needed for state
+    } else if (key === 'district') {
+      const next = String(value);
+      setFormData(prev => ({ ...prev, district: next, mandal: '', village: '' }));
+      if (formData.state === 'TS') setSelectedDistrict(next);
+    } else if (key === 'mandal') {
+      const next = String(value);
+      setFormData(prev => ({ ...prev, mandal: next, village: '' }));
+      if (formData.state === 'TS') setSelectedMandal(next);
+    } else if (key === 'village') {
+      const next = String(value);
+      setFormData(prev => ({ ...prev, village: next }));
+      if (formData.state === 'TS') setSelectedVillage(next);
+    } else {
+      setFormData(prev => ({ ...prev, [key]: value }));
+    }
   };
 
   // Vision Camera + burst state
@@ -1353,18 +1392,86 @@ const AddCattleScreen = () => {
                   <Text style={styles.buttonText}>📷 Take Photo ({muzzleImages.length + 1}/4)</Text>
                 </TouchableOpacity>
               ) : (
-                <TouchableOpacity
-                  style={styles.primaryButton}
-                  onPress={() => analyzeMuzzleImages(muzzleImages)}
-                  disabled={permissionDenied}
-                >
-                  <Text style={styles.buttonText}>🔍 Analyze with AI</Text>
-                </TouchableOpacity>
+                <>
+                  {!locationConfirmed ? (
+                    <View style={{ marginTop: 12 }}>
+                      <Text style={styles.sectionTitle}>📍 Confirm Location</Text>
+                      <Text style={styles.instructionText}>Please confirm or edit the location before AI verification.</Text>
+
+                      <Text style={styles.label}>State *</Text>
+                      <View style={styles.pickerContainer}>
+                        <Picker
+                          selectedValue={formData.state}
+                          onValueChange={(value) => handleInputChange('state', value)}
+                          style={styles.picker}
+                        >
+                          {indianStates.map((state) => (
+                            <Picker.Item key={state.id} label={state.name} value={state.id} />
+                          ))}
+                        </Picker>
+                      </View>
+
+                      <Text style={styles.label}>District *</Text>
+                      <View style={styles.pickerContainer}>
+                        <Picker
+                          selectedValue={formData.district}
+                          onValueChange={(value) => handleInputChange('district', value)}
+                          style={styles.picker}
+                        >
+                          {filteredDistricts.map((district) => (
+                            <Picker.Item key={district.id} label={district.name} value={district.id} />
+                          ))}
+                        </Picker>
+                      </View>
+
+                      <Text style={styles.label}>Mandal *</Text>
+                      <View style={styles.pickerContainer}>
+                        <Picker
+                          selectedValue={formData.mandal}
+                          onValueChange={(value) => handleInputChange('mandal', value)}
+                          style={styles.picker}
+                        >
+                          {filteredMandal.map((mandal) => (
+                            <Picker.Item key={mandal.id} label={mandal.name} value={mandal.id} />
+                          ))}
+                        </Picker>
+                      </View>
+
+                      <Text style={styles.label}>Village *</Text>
+                      <View style={styles.pickerContainer}>
+                        <Picker
+                          selectedValue={formData.village}
+                          onValueChange={(value) => handleInputChange('village', value)}
+                          style={styles.picker}
+                        >
+                          {filteredVillage.map((v) => (
+                            <Picker.Item key={v.id} label={v.name} value={v.id} />
+                          ))}
+                        </Picker>
+                      </View>
+
+                      <TouchableOpacity
+                        style={styles.primaryButton}
+                        onPress={() => setLocationConfirmed(true)}
+                      >
+                        <Text style={styles.buttonText}>✅ Confirm Location</Text>
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={styles.primaryButton}
+                      onPress={() => analyzeMuzzleImages(muzzleImages)}
+                      disabled={permissionDenied}
+                    >
+                      <Text style={styles.buttonText}>🔍 Analyze with AI</Text>
+                    </TouchableOpacity>
+                  )}
+                </>
               )}
               
               <TouchableOpacity
                 style={styles.resetButton}
-                onPress={() => setMuzzleImages([])}
+                onPress={() => { setMuzzleImages([]); setLocationConfirmed(false); }}
               >
                 <Text style={styles.resetButtonText}>🗑️ Start Over</Text>
               </TouchableOpacity>
@@ -1450,6 +1557,63 @@ const AddCattleScreen = () => {
       <Text style={styles.instructionText}>
         Please capture a full body view of the cattle
       </Text>
+
+      {/* Always show location pickers here so user can see/select Village in Step 2 */}
+      <View style={{ marginTop: 12 }}>
+        <Text style={styles.sectionTitle}>📍 Location</Text>
+
+        <Text style={styles.label}>State *</Text>
+        <View style={styles.pickerContainer}>
+          <Picker
+            selectedValue={formData.state}
+            onValueChange={(value) => handleInputChange('state', value)}
+            style={styles.picker}
+          >
+            {indianStates.map((state) => (
+              <Picker.Item key={state.id} label={state.name} value={state.id} />
+            ))}
+          </Picker>
+        </View>
+
+        <Text style={styles.label}>District *</Text>
+        <View style={styles.pickerContainer}>
+          <Picker
+            selectedValue={formData.district}
+            onValueChange={(value) => handleInputChange('district', value)}
+            style={styles.picker}
+          >
+            {filteredDistricts.map((district) => (
+              <Picker.Item key={district.id} label={district.name} value={district.id} />
+            ))}
+          </Picker>
+        </View>
+
+        <Text style={styles.label}>Mandal *</Text>
+        <View style={styles.pickerContainer}>
+          <Picker
+            selectedValue={formData.mandal}
+            onValueChange={(value) => handleInputChange('mandal', value)}
+            style={styles.picker}
+          >
+            {filteredMandal.map((mandal) => (
+              <Picker.Item key={mandal.id} label={mandal.name} value={mandal.id} />
+            ))}
+          </Picker>
+        </View>
+
+        <Text style={styles.label}>Village *</Text>
+        <View style={styles.pickerContainer}>
+          <Picker
+            selectedValue={formData.village}
+            onValueChange={(value) => handleInputChange('village', value)}
+            style={styles.picker}
+          >
+            {filteredVillage.map((v) => (
+              <Picker.Item key={v.id} label={v.name} value={v.id} />
+            ))}
+          </Picker>
+        </View>
+      </View>
       
       {formData.front_photo ? (
         <View style={styles.imageColumn}>

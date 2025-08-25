@@ -20,6 +20,7 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
 import { API_CONFIG, apiGet, buildMediaUrl } from '../../config/api';
+// NOTE: Beneficiary endpoints updated to new base paths; no trailing slash for GET by id
 import FastCattleImage from '../../components/FastCattleImage';
 import { perf, usePerformanceTracker } from '../../utils/performance';
 import { useTheme } from '../../contexts';
@@ -191,7 +192,7 @@ const BeneficiaryProfileScreen = () => {
             // Try to load from API first when online
             console.log('🌐 Loading from API...');
             beneficiaryData = await apiGet(
-              `${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}/`,
+              `${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}`,
               { 
                 timeout: API_CONFIG.FAST_TIMEOUT,
                 cache: true

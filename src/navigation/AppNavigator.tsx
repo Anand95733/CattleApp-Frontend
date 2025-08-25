@@ -28,7 +28,7 @@ const AppNavigator = () => {
 
   useEffect(() => {
     const getSession = async () => {
-      const { data, error } = await supabase.auth.getSession();
+      const { data } = await supabase.auth.getSession();
       setSession(data?.session ?? null);
       setLoading(false);
     };
@@ -36,7 +36,14 @@ const AppNavigator = () => {
 
     const { data: authListener } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
+      // Start background sync when user is logged in
+      if (session) {
+        try { OfflineSyncService.getInstance().start(); } catch {}
+      }
     });
+
+    // Also start sync on mount if already logged in
+    try { OfflineSyncService.getInstance().start(); } catch {}
 
     return () => {
       authListener.subscription.unsubscribe();

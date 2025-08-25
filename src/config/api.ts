@@ -1,14 +1,17 @@
 // API Configuration - Optimized for single working URL
 export const API_CONFIG = {
-  BASE_URL: 'http://127.0.0.1:8000',  // Primary working URL (localhost with ADB forwarding)
-  MEDIA_URL: 'http://127.0.0.1:8000/media/',
+  BASE_URL: 'http://107.210.222.39:8000',
+  MEDIA_URL: 'http://107.210.222.39:8000/media/',
   ENDPOINTS: {
-    BENEFICIARIES: '/api/beneficiaries/',
-    SELLERS: '/api/sellers/',
+    BENEFICIARIES: '/beneficiaries/',
+    BENEFICIARIES_ALL: '/beneficiaries/all',
+    SELLERS: '/sellers/',
+    SELLERS_ALL: '/sellers/all',
     CATTLE: '/api/cattle/',
     MILCH_ANIMALS: '/api/milch-animals/',
     SC_VISITS: '/api/sc-visits/',
     HEALTHCHECK: '/api/healthcheck/',
+    VILLAGES: '/api/locations/villages',
   },
   TIMEOUT: 6000, // Optimized timeout
   FAST_TIMEOUT: 3000, // For quick requests

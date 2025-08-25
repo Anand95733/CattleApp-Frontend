@@ -18,8 +18,10 @@ import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
+import { Picker } from '@react-native-picker/picker';
+import { useLocation } from '../../contexts';
 import ImagePicker from 'react-native-image-crop-picker';
-import { API_CONFIG, buildApiUrl } from '../../config/api';
+import { API_CONFIG, apiPost } from '../../config/api';
 import NetInfo from '@react-native-community/netinfo';
 import { insertBeneficiaryLocal } from '../../database/repositories/beneficiaryRepo';
 import { saveImageLocally } from '../../utils/imageStorage';
@@ -36,20 +38,53 @@ const AddBeneficiaryScreenFixed = () => {
   const [form, setForm] = useState({
     beneficiary_id: '',
     name: '',
-    father_or_husband: '',
-    aadhaar_id: '',
     village: '',
     mandal: '',
     district: '',
     state: '',
     phone_number: '',
-    animals_sanctioned: '0',
+    num_of_items: '0',
   });
 
   const [loading, setLoading] = useState(false);
   const [beneficiaryImage, setBeneficiaryImage] = useState<string>('');
   const [hasCameraPermission, setHasCameraPermission] = useState<boolean | null>(null);
   const [permissionDenied, setPermissionDenied] = useState<boolean>(false);
+
+  // Location context and local selection state
+  const { 
+    locationState,
+    getAllDistricts,
+    getMandalsByDistrict,
+    getVillagesByMandal,
+    getVillagesByDistrict,
+    getDistrictName,
+    getMandalName,
+    getVillageName,
+    setSelectedDistrict,
+    setSelectedMandal,
+    setSelectedVillage,
+  } = useLocation();
+
+  const [selectedDistrictId, setSelectedDistrictId] = useState<string>(locationState.selectedDistrict || '');
+  const [selectedMandalId, setSelectedMandalId] = useState<string>(locationState.selectedMandal || '');
+  const [selectedVillageId, setSelectedVillageId] = useState<string>(locationState.selectedVillage || '');
+
+  useEffect(() => {
+    // Initialize and keep form display values synced with Home selection
+    setSelectedDistrictId(locationState.selectedDistrict || '');
+    setSelectedMandalId(locationState.selectedMandal || '');
+    setSelectedVillageId(locationState.selectedVillage || '');
+    if (locationState.selectedDistrict) {
+      setForm(prev => ({
+        ...prev,
+        district: getDistrictName(locationState.selectedDistrict),
+        mandal: locationState.selectedMandal ? getMandalName(locationState.selectedMandal) : '',
+        village: locationState.selectedVillage ? getVillageName(locationState.selectedVillage) : '',
+        state: 'Telangana',
+      }));
+    }
+  }, [locationState.selectedDistrict, locationState.selectedMandal, locationState.selectedVillage]);
 
   // Check camera permission on mount
   useEffect(() => {
@@ -160,14 +195,12 @@ const AddBeneficiaryScreenFixed = () => {
     const requiredFields = [
       'beneficiary_id',
       'name',
-      'father_or_husband',
-      'aadhaar_id',
       'village',
       'mandal',
       'district',
       'state',
       'phone_number',
-      'animals_sanctioned',
+      'num_of_items',
     ];
 
     for (const field of requiredFields) {
@@ -182,13 +215,8 @@ const AddBeneficiaryScreenFixed = () => {
       return false;
     }
 
-    if (!/^\d{12}$/.test(form.aadhaar_id)) {
-      Alert.alert('Validation Error', 'Aadhaar ID must be 12 digits');
-      return false;
-    }
-
-    if (form.animals_sanctioned && parseInt(form.animals_sanctioned) < 0) {
-      Alert.alert('Validation Error', 'Animals sanctioned cannot be negative');
+    if (form.num_of_items && parseInt(form.num_of_items, 10) < 0) {
+      Alert.alert('Validation Error', 'Number of items cannot be negative');
       return false;
     }
 
@@ -241,14 +269,12 @@ const AddBeneficiaryScreenFixed = () => {
             server_id: null,
             beneficiary_id: form.beneficiary_id,
             name: form.name,
-            father_or_husband: form.father_or_husband,
-            aadhaar_id: form.aadhaar_id,
             village: form.village,
             mandal: form.mandal,
             district: form.district,
             state: form.state,
             phone_number: form.phone_number,
-            num_of_items: Number(form.animals_sanctioned || '0'),
+            num_of_items: Number(form.num_of_items || '0'),
             local_image_path: localImagePath,
           });
           Alert.alert('Saved Offline', 'Beneficiary will sync automatically when online.');
@@ -257,14 +283,12 @@ const AddBeneficiaryScreenFixed = () => {
           setForm({
             beneficiary_id: '',
             name: '',
-            father_or_husband: '',
-            aadhaar_id: '',
             village: '',
             mandal: '',
             district: '',
             state: '',
             phone_number: '',
-            animals_sanctioned: '0',
+            num_of_items: '0',
           });
           setBeneficiaryImage('');
           return; // Exit early for offline save
@@ -274,64 +298,31 @@ const AddBeneficiaryScreenFixed = () => {
           return;
         }
       } else {
-        // Online: Create FormData to handle both form data and image
-        const formData = new FormData();
-        
-        // Add form fields
-        formData.append('beneficiary_id', form.beneficiary_id.trim());
-        formData.append('name', form.name.trim());
-        formData.append('father_or_husband', form.father_or_husband.trim());
-        formData.append('aadhaar_id', form.aadhaar_id.trim());
-        formData.append('village', form.village.trim());
-        formData.append('mandal', form.mandal.trim());
-        formData.append('district', form.district.trim());
-        formData.append('state', form.state.trim());
-        
-        // Convert phone number to integer format
-        const phoneNumber = form.phone_number.trim();
-        const phoneInt = phoneNumber && /^\d+$/.test(phoneNumber) ? parseInt(phoneNumber, 10) : 0;
-        formData.append('phone_number', String(phoneInt));
-        
-        // Convert animals_sanctioned to integer format
-        const animalsCount = parseInt(form.animals_sanctioned || '0', 10);
-        formData.append('animals_sanctioned', String(animalsCount));
-  
-        // Add image if available
-        if (beneficiaryImage) {
-          formData.append('beneficiary_image', {
-            uri: beneficiaryImage,
-            name: 'beneficiary_image.jpg',
-            type: 'image/jpeg',
-          } as any);
-        }
-  
-        console.log('Submitting FormData with image:', !!beneficiaryImage);
-        console.log('API URL:', buildApiUrl(API_CONFIG.ENDPOINTS.BENEFICIARIES));
-  
-        const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.BENEFICIARIES), {
-          method: 'POST',
-          headers: {
-            'Accept': 'application/json',
-            // Don't set Content-Type - let fetch set it automatically with boundary
-          },
-          body: formData,
+        // Online: Send JSON as per new API spec (no image upload supported)
+        const payload = {
+          beneficiary_id: form.beneficiary_id.trim(),
+          name: form.name.trim(),
+          village: form.village.trim(),
+          mandal: form.mandal.trim(),
+          district: form.district.trim(),
+          state: form.state.trim(),
+          phone_number: form.phone_number.trim(),
+          num_of_items: parseInt(form.num_of_items || '0', 10),
+        };
+
+        console.log('Submitting JSON payload (new API):', payload);
+
+        const result = await apiPost(API_CONFIG.ENDPOINTS.BENEFICIARIES, payload, {
+          timeout: API_CONFIG.TIMEOUT,
         });
-  
-        const result = await response.json();
-  
-        if (response.ok) {
-          console.log('API Response:', result);
-          console.log('Navigating to profile with ID:', result.beneficiary_id);
-          
-          Alert.alert('Success', 'Beneficiary added successfully');
-          navigation.navigate('BeneficiaryProfile', {
-            beneficiary_id: result.beneficiary_id,
-          });
-        } else {
-          const errorMessage = result.detail || 
-            (result.errors ? JSON.stringify(result.errors) : 'Failed to add beneficiary');
-          Alert.alert('Error', errorMessage);
-        }
+
+        console.log('API Response:', result);
+        console.log('Navigating to profile with ID:', result.beneficiary_id);
+        
+        Alert.alert('Success', 'Beneficiary added successfully');
+        navigation.navigate('BeneficiaryProfile', {
+          beneficiary_id: result.beneficiary_id,
+        });
       }
     } catch (error) {
       console.error('Submit error:', error);
@@ -345,14 +336,13 @@ const AddBeneficiaryScreenFixed = () => {
     switch (field) {
       case 'beneficiary_id': return 'id-card-outline';
       case 'name': return 'person-outline';
-      case 'father_or_husband': return 'man-outline';
-      case 'aadhaar_id': return 'card-outline';
+
       case 'village': return 'home-outline';
       case 'mandal': return 'map-outline';
       case 'district': return 'business-outline';
       case 'state': return 'flag-outline';
       case 'phone_number': return 'call-outline';
-      case 'animals_sanctioned': return 'paw-outline';
+      case 'num_of_items': return 'list-outline';
       default: return 'information-circle-outline';
     }
   };
@@ -361,14 +351,13 @@ const AddBeneficiaryScreenFixed = () => {
     const labels: { [key: string]: string } = {
       'beneficiary_id': 'Beneficiary ID',
       'name': 'Full Name',
-      'father_or_husband': 'Father/Husband Name',
-      'aadhaar_id': 'Aadhaar Number',
+
       'village': 'Village',
       'mandal': 'Mandal',
       'district': 'District',
       'state': 'State',
       'phone_number': 'Phone Number',
-      'animals_sanctioned': 'Animals Sanctioned',
+      'num_of_items': 'Number of Items',
     };
     return labels[field] || field.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase());
   };
@@ -384,7 +373,7 @@ const AddBeneficiaryScreenFixed = () => {
       'district': 'Enter district name',
       'state': 'Enter state name',
       'phone_number': 'Enter 10-digit phone number',
-      'animals_sanctioned': 'Enter number of animals',
+      'num_of_items': 'Enter number of items',
     };
     return placeholders[field] || `Enter ${getFieldLabel(field)}`;
   };
@@ -400,7 +389,7 @@ const AddBeneficiaryScreenFixed = () => {
       'district': 100,
       'state': 100,
       'phone_number': 10,
-      'animals_sanctioned': 10, // Reasonable limit for number input
+      'num_of_items': 10, // Reasonable limit for number input
     };
     return maxLengths[field] || 100;
   };
@@ -432,8 +421,8 @@ const AddBeneficiaryScreenFixed = () => {
           onChangeText={(value) => handleChange(field, value)}
           style={styles.input}
           keyboardType={
-            field === 'phone_number' || field === 'aadhaar_id' || field === 'animals_sanctioned' 
-              ? 'numeric' 
+            field === 'phone_number' || field === 'num_of_items'
+              ? 'numeric'
               : 'default'
           }
           maxLength={getMaxLength(field)}
@@ -501,7 +490,146 @@ const AddBeneficiaryScreenFixed = () => {
         </View>
 
         {/* Form Fields */}
-        {Object.keys(form).map((field, index) => renderFormField(field, index))}
+        {(
+          [
+            'beneficiary_id',
+            'name',
+            'village',
+            'mandal',
+            'district',
+            'state',
+            'phone_number',
+            'num_of_items',
+          ] as const
+        ).map((field, index) => {
+          if (field === 'district' || field === 'mandal' || field === 'village') return null;
+          return renderFormField(field, index);
+        })}
+
+        {/* Location Pickers */}
+        <View style={{ marginTop: 8 }}>
+          {/* District */}
+          <View style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name="business-outline" size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={styles.labelContainer}>
+                <Text style={styles.label}>District</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10 }}>
+              <Picker
+                selectedValue={selectedDistrictId}
+                onValueChange={(value) => {
+                  const next = String(value);
+                  setSelectedDistrictId(next);
+                  setSelectedDistrict(next);
+                  // Clear dependent selections; don't auto-select
+                  setSelectedMandalId('');
+                  setSelectedVillageId('');
+                  setSelectedMandal('');
+                  setSelectedVillage('');
+                  setForm(prev => ({
+                    ...prev,
+                    district: getDistrictName(next),
+                    mandal: '',
+                    village: '',
+                    state: 'Telangana',
+                  }));
+                }}
+                dropdownIconColor="#6e45e2"
+                mode="dropdown"
+                style={{ color: '#6e45e2' }}
+              >
+                {getAllDistricts().map((d) => (
+                  <Picker.Item key={d.id} label={d.name} value={d.id} style={{ color: '#6e45e2' }} />
+                ))}
+              </Picker>
+            </View>
+          </View>
+
+          {/* Mandal */}
+          <View style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name="map-outline" size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={styles.labelContainer}>
+                <Text style={styles.label}>Mandal</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10 }}>
+              <Picker
+                selectedValue={selectedMandalId}
+                onValueChange={(value) => {
+                  const next = String(value);
+                  setSelectedMandalId(next);
+                  setSelectedMandal(next);
+                  // Clear village; don't auto-select
+                  setSelectedVillageId('');
+                  setSelectedVillage('');
+                  setForm(prev => ({
+                    ...prev,
+                    mandal: getMandalName(next),
+                    village: '',
+                  }));
+                }}
+                dropdownIconColor="#6e45e2"
+                mode="dropdown"
+                style={{ color: '#6e45e2' }}
+              >
+                {getMandalsByDistrict(selectedDistrictId).map((m) => (
+                  <Picker.Item key={m.id} label={m.name} value={m.id} style={{ color: '#6e45e2' }} />
+                ))}
+              </Picker>
+            </View>
+          </View>
+
+          {/* Village */}
+          <View style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name="home-outline" size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={styles.labelContainer}>
+                <Text style={styles.label}>Village</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10 }}>
+              <Picker
+                selectedValue={selectedVillageId}
+                onValueChange={(value) => {
+                  const next = String(value);
+                  setSelectedVillageId(next);
+                  setSelectedVillage(next);
+                  setForm(prev => ({
+                    ...prev,
+                    village: getVillageName(next),
+                  }));
+                }}
+                dropdownIconColor="#6e45e2"
+                mode="dropdown"
+                style={{ color: '#6e45e2' }}
+              >
+                {(() => {
+                  const villagesList = selectedMandalId
+                    ? getVillagesByMandal(selectedMandalId)
+                    : getVillagesByDistrict(selectedDistrictId);
+                  if (!villagesList || villagesList.length === 0) {
+                    return (
+                      <Picker.Item
+                        label="No villages configured. Select a mandal or update villages.ts"
+                        value=""
+                        style={{ color: '#6e45e2' }}
+                      />
+                    );
+                  }
+                  return villagesList.map(v => (
+                    <Picker.Item key={v.id} label={v.name} value={v.id} style={{ color: '#6e45e2' }} />
+                  ));
+                })()}
+              </Picker>
+            </View>
+          </View>
+        </View>
 
         {/* Submit Button */}
         <TouchableOpacity 

@@ -7,10 +7,29 @@ import { getSellerByLocalId } from '../database/repositories/sellerRepo';
 import { getBeneficiaryByLocalId } from '../database/repositories/beneficiaryRepo';
 import { imageExists, getLocalImageUri } from '../utils/imageStorage';
 
+// Simple status events for UI visibility
+export type SyncPhase = 'idle' | 'sellers' | 'beneficiaries' | 'cattle';
+export type SyncEvent = { phase: SyncPhase; message: string; error?: string | null };
+
 class OfflineSyncService {
   private static instance: OfflineSyncService;
   private syncing = false;
   private unsubscribeNetInfo: (() => void) | null = null;
+  private listeners: Array<(e: SyncEvent) => void> = [];
+  private hadError = false;
+
+  onStatus(listener: (e: SyncEvent) => void) {
+    this.listeners.push(listener);
+    return () => {
+      this.listeners = this.listeners.filter(l => l !== listener);
+    };
+  }
+
+  private emit(e: SyncEvent) {
+    this.listeners.forEach(l => {
+      try { l(e); } catch {}
+    });
+  }
 
   static getInstance() {
     if (!OfflineSyncService.instance) {
@@ -48,13 +67,18 @@ class OfflineSyncService {
   private async syncAll() {
     if (this.syncing) return;
     this.syncing = true;
+    this.hadError = false;
     try {
-      // 1. Sync Sellers FIFO
+      this.emit({ phase: 'sellers', message: 'Syncing sellers…' });
       await this.syncSellers();
-      // 2. Sync Beneficiaries FIFO
+      if (this.hadError) return; // stop chain
+      this.emit({ phase: 'beneficiaries', message: 'Syncing beneficiaries…' });
       await this.syncBeneficiaries();
-      // 3. Sync Cattle FIFO (only when parents have server_id)
+      if (this.hadError) return; // stop chain
+      this.emit({ phase: 'cattle', message: 'Syncing cattle…' });
       await this.syncCattle();
+      if (this.hadError) return; // stop chain
+      this.emit({ phase: 'idle', message: 'Sync complete' });
     } finally {
       this.syncing = false;
     }
@@ -63,6 +87,7 @@ class OfflineSyncService {
   private async syncSellers() {
     const unsynced = await listUnsyncedSellersFIFO();
     console.log(`🔄 Syncing ${unsynced.length} sellers...`);
+    this.emit({ phase: 'sellers', message: `Syncing ${unsynced.length} sellers…` });
     
     for (const item of unsynced) {
       try {
@@ -85,16 +110,19 @@ class OfflineSyncService {
         });
 
         // Use JSON for sellers (no images) - match Swagger API exactly
-        const phoneNumber = item.phone_number?.trim() || '';
+        const phoneNumber = (item.phone_number ?? '').toString().trim();
+        // Ensure required seller_id is present; derive a stable value from local_id if missing
+        const sellerId = ((item as any).seller_id?.toString().trim()) || (item.server_id ? String(item.server_id) : `local-${item.local_id}`);
         const payload = {
+          seller_id: sellerId,
           name: item.name.trim(),
           father_or_husband: item.father_or_husband?.trim() || '',
-          aadhaar_id: item.aadhaar_id?.trim() || '000000000000', // Default Aadhaar if missing (required by Django)
+          aadhaar_id: item.aadhaar_id?.trim() || '000000000000',
           village: item.village?.trim() || '',
           mandal: item.mandal?.trim() || '',
           district: item.district?.trim() || '',
           state: item.state?.trim() || '',
-          phone_number: phoneNumber && /^\d+$/.test(phoneNumber) ? parseInt(phoneNumber, 10) : 0,
+          phone_number: phoneNumber, // send as string per Swagger
         };
         
         // Log what we're sending to the API
@@ -119,6 +147,9 @@ class OfflineSyncService {
             response: res,
             url: buildApiUrl(API_CONFIG.ENDPOINTS.SELLERS),
           });
+          const errBody = (() => { try { return JSON.stringify(res).slice(0, 500); } catch { return String(res); } })();
+          this.emit({ phase: 'sellers', message: 'Seller sync failed', error: `HTTP ${response.status} ${errBody}` });
+          this.hadError = true;
           throw new Error(`HTTP ${response.status}: ${JSON.stringify(res)}`);
         }
         
@@ -140,6 +171,7 @@ class OfflineSyncService {
   private async syncBeneficiaries() {
     const unsynced = await listUnsyncedBeneficiariesFIFO();
     console.log(`🔄 Syncing ${unsynced.length} beneficiaries...`);
+    this.emit({ phase: 'beneficiaries', message: `Syncing ${unsynced.length} beneficiaries…` });
     
     for (const item of unsynced) {
       try {
@@ -175,9 +207,8 @@ class OfflineSyncService {
           local_image_path: item.local_image_path,
         });
 
-        // Convert phone number to match API format (integer)
-        const phoneNumber = item.phone_number?.trim() || '';
-        const phoneInt = phoneNumber && /^\d+$/.test(phoneNumber) ? parseInt(phoneNumber, 10) : 0;
+        // Convert phone number to match API format (string)
+        const phoneNumber = (item.phone_number ?? '').toString().trim();
         
         // Convert animals_sanctioned to match API format (integer)
         const animalsCount = item.num_of_items ?? 0;
@@ -236,8 +267,8 @@ class OfflineSyncService {
           formData.append('mandal', requiredFields.mandal || '');
           formData.append('district', requiredFields.district || '');
           formData.append('state', requiredFields.state || '');
-          formData.append('phone_number', String(phoneInt));
-          formData.append('animals_sanctioned', String(animalsCount));
+          formData.append('phone_number', phoneNumber);
+          formData.append('num_of_items', String(animalsCount));
           
           formData.append('beneficiary_image', {
             uri: getLocalImageUri(item.local_image_path),
@@ -248,8 +279,8 @@ class OfflineSyncService {
           console.log('📤 Syncing beneficiary (FormData with image):', {
             beneficiary_id: requiredFields.beneficiary_id,
             name: requiredFields.name,
-            phone_number: phoneInt,
-            animals_sanctioned: animalsCount,
+            phone_number: phoneNumber,
+            num_of_items: animalsCount,
             imagePath: item.local_image_path,
           });
           
@@ -272,8 +303,8 @@ class OfflineSyncService {
             mandal: requiredFields.mandal || '',
             district: requiredFields.district || '',
             state: requiredFields.state || '',
-            phone_number: phoneInt,
-            animals_sanctioned: animalsCount,
+            phone_number: phoneNumber,
+            num_of_items: animalsCount,
           };
           
           console.log('📤 Syncing beneficiary (JSON, no image):', payload);
@@ -309,7 +340,9 @@ class OfflineSyncService {
               message: res.message,
             });
           }
-          
+          const errBody = (() => { try { return JSON.stringify(res).slice(0, 500); } catch { return String(res); } })();
+          this.emit({ phase: 'beneficiaries', message: 'Beneficiary sync failed', error: `HTTP ${response.status} ${errBody}` });
+          this.hadError = true;
           throw new Error(`HTTP ${response.status}: ${JSON.stringify(res)}`);
         }
         
@@ -330,6 +363,7 @@ class OfflineSyncService {
 
   private async syncCattle() {
     const unsynced = await listUnsyncedCattleFIFO();
+    this.emit({ phase: 'cattle', message: `Syncing ${unsynced.length} cattle…` });
     for (const item of unsynced) {
       try {
         // Ensure parents have server_id

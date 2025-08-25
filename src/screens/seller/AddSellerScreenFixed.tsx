@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import {
   View,
   Text,
@@ -15,9 +15,12 @@ import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../../navigation/types';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
+import { Picker } from '@react-native-picker/picker';
+import { useLocation } from '../../contexts';
 import { API_CONFIG, buildApiUrl } from '../../config/api';
 import NetInfo from '@react-native-community/netinfo';
 import { insertSellerLocal } from '../../database/repositories/sellerRepo';
+import uuid from 'react-native-uuid';
 
 type AddSellerNavigationProp = StackNavigationProp<RootStackParamList, 'AddSeller'>;
 
@@ -36,6 +39,41 @@ const AddSellerScreenFixed = () => {
   });
 
   const [loading, setLoading] = useState(false);
+
+  // Location context + local selection
+  const { 
+    locationState,
+    getAllDistricts,
+    getMandalsByDistrict,
+    getVillagesByMandal,
+    getVillagesByDistrict,
+    getDistrictName,
+    getMandalName,
+    getVillageName,
+    setSelectedDistrict,
+    setSelectedMandal,
+    setSelectedVillage,
+  } = useLocation();
+
+  const [selectedDistrictId, setSelectedDistrictId] = useState<string>(locationState.selectedDistrict || '');
+  const [selectedMandalId, setSelectedMandalId] = useState<string>(locationState.selectedMandal || '');
+  const [selectedVillageId, setSelectedVillageId] = useState<string>(locationState.selectedVillage || '');
+
+  // Sync initial values from Home selection into this screen, and keep showing them
+  useEffect(() => {
+    setSelectedDistrictId(locationState.selectedDistrict || '');
+    setSelectedMandalId(locationState.selectedMandal || '');
+    setSelectedVillageId(locationState.selectedVillage || '');
+    if (locationState.selectedDistrict) {
+      setForm(prev => ({
+        ...prev,
+        district: getDistrictName(locationState.selectedDistrict),
+        mandal: locationState.selectedMandal ? getMandalName(locationState.selectedMandal) : '',
+        village: locationState.selectedVillage ? getVillageName(locationState.selectedVillage) : '',
+        state: 'Telangana',
+      }));
+    }
+  }, [locationState.selectedDistrict, locationState.selectedMandal, locationState.selectedVillage]);
 
   const handleChange = (field: string, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -78,9 +116,20 @@ const AddSellerScreenFixed = () => {
 
     setLoading(true);
 
+    // Generate a unique seller_id using UUID
+    const generateSellerId = () => {
+      return uuid.v4() as string;
+    };
+
     const payload = {
-      ...form,
-      phone_number: parseInt(form.phone_number, 10), // Convert to integer as required by API
+      seller_id: generateSellerId(),
+      name: form.name,
+      father_or_husband: form.father_or_husband,
+      village: form.village,
+      mandal: form.mandal,
+      district: form.district,
+      state: form.state,
+      phone_number: form.phone_number, // Keep as string as required by API
     };
 
     try {
@@ -91,16 +140,18 @@ const AddSellerScreenFixed = () => {
       if (!isOnline) {
         // Save offline to SQLite
         try {
-          await insertSellerLocal({
+          const localId = await insertSellerLocal({
             server_id: null,
             name: form.name,
             father_or_husband: form.father_or_husband,
+            aadhaar_id: form.aadhaar_id,
             village: form.village,
             mandal: form.mandal,
             district: form.district,
             state: form.state,
             phone_number: form.phone_number,
           });
+          
           Alert.alert('Saved Offline', 'Seller will sync automatically when online.');
           
           // Reset form after successful save
@@ -114,6 +165,27 @@ const AddSellerScreenFixed = () => {
             state: '',
             phone_number: '',
           });
+          
+          // Reset location selections
+          setSelectedDistrictId('');
+          setSelectedMandalId('');
+          setSelectedVillageId('');
+          
+          // Navigate to the newly created seller's profile using local ID and seed data
+          navigation.navigate('SellerProfile', { 
+            seller_id: String(localId),
+            seller: {
+              seller_id: String(localId),
+              name: form.name,
+              father_or_husband: form.father_or_husband,
+              aadhaar_id: form.aadhaar_id,
+              village: form.village,
+              mandal: form.mandal,
+              district: form.district,
+              state: form.state,
+              phone_number: form.phone_number,
+            }
+          });
           return; // Exit early for offline save
         } catch (offlineError) {
           console.error('Offline save failed:', offlineError);
@@ -122,7 +194,11 @@ const AddSellerScreenFixed = () => {
         }
       } else {
         // Online: post to server
-        const response = await fetch(buildApiUrl(API_CONFIG.ENDPOINTS.SELLERS), {
+        const apiUrl = buildApiUrl(API_CONFIG.ENDPOINTS.SELLERS);
+        console.log('🚀 Posting to API:', apiUrl);
+        console.log('📦 Payload:', JSON.stringify(payload, null, 2));
+        
+        const response = await fetch(apiUrl, {
           method: 'POST',
           headers: {
             Accept: 'application/json',
@@ -130,10 +206,46 @@ const AddSellerScreenFixed = () => {
           },
           body: JSON.stringify(payload),
         });
+        
+        console.log('📡 Response status:', response.status);
         const result = await response.json();
+        console.log('📡 Response data:', JSON.stringify(result, null, 2));
+        
         if (response.ok) {
           Alert.alert('Success', 'Seller added successfully');
-          navigation.navigate('SellerProfile', { seller_id: result.seller_id });
+          
+          // Reset form after successful save
+          setForm({
+            name: '',
+            father_or_husband: '',
+            aadhaar_id: '',
+            village: '',
+            mandal: '',
+            district: '',
+            state: '',
+            phone_number: '',
+          });
+          
+          // Reset location selections
+          setSelectedDistrictId('');
+          setSelectedMandalId('');
+          setSelectedVillageId('');
+          
+          // Navigate to the newly created seller's profile and seed data
+          navigation.navigate('SellerProfile', { 
+            seller_id: result.seller_id,
+            seller: {
+              seller_id: result.seller_id,
+              name: form.name,
+              father_or_husband: form.father_or_husband,
+              aadhaar_id: form.aadhaar_id,
+              village: form.village,
+              mandal: form.mandal,
+              district: form.district,
+              state: form.state,
+              phone_number: form.phone_number,
+            }
+          });
         } else {
           Alert.alert('Error', result.detail || 'Something went wrong');
         }
@@ -232,7 +344,135 @@ const AddSellerScreenFixed = () => {
         keyboardShouldPersistTaps="handled"
       >
         {/* Form Fields */}
-        {Object.keys(form).map((field, index) => renderFormField(field, index))}
+        {Object.keys(form).map((field, index) => {
+          if (field === 'district' || field === 'mandal' || field === 'village') return null;
+          return renderFormField(field, index);
+        })}
+
+        {/* Location Pickers */}
+        <View style={{ marginTop: 8 }}>
+          {/* District */}
+          <View style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name="business-outline" size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={styles.labelContainer}>
+                <Text style={styles.label}>District</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10 }}>
+              <Picker
+                selectedValue={selectedDistrictId}
+                onValueChange={(value) => {
+                  const next = String(value);
+                  setSelectedDistrictId(next);
+                  setSelectedDistrict(next);
+                  // Clear dependent selections (do not auto-select)
+                  setSelectedMandalId('');
+                  setSelectedVillageId('');
+                  setSelectedMandal('');
+                  setSelectedVillage('');
+                  setForm(prev => ({
+                    ...prev,
+                    district: getDistrictName(next),
+                    mandal: '',
+                    village: '',
+                    state: 'Telangana',
+                  }));
+                }}
+                dropdownIconColor="#6e45e2"
+                mode="dropdown"
+                style={{ color: '#6e45e2' }}
+              >
+                {getAllDistricts().map((d) => (
+                  <Picker.Item key={d.id} label={d.name} value={d.id} style={{ color: '#6e45e2' }} />
+                ))}
+              </Picker>
+            </View>
+          </View>
+
+          {/* Mandal */}
+          <View style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name="map-outline" size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={styles.labelContainer}>
+                <Text style={styles.label}>Mandal</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10 }}>
+              <Picker
+                selectedValue={selectedMandalId}
+                onValueChange={(value) => {
+                  const next = String(value);
+                  setSelectedMandalId(next);
+                  setSelectedMandal(next);
+                  // Clear village; do not auto-select
+                  setSelectedVillageId('');
+                  setSelectedVillage('');
+                  setForm(prev => ({
+                    ...prev,
+                    mandal: getMandalName(next),
+                    village: '',
+                  }));
+                }}
+                dropdownIconColor="#6e45e2"
+                mode="dropdown"
+                style={{ color: '#6e45e2' }}
+              >
+                {getMandalsByDistrict(selectedDistrictId).map((m) => (
+                  <Picker.Item key={m.id} label={m.name} value={m.id} style={{ color: '#fff' }} />
+                ))}
+              </Picker>
+            </View>
+          </View>
+
+          {/* Village */}
+          <View style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name="home-outline" size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={styles.labelContainer}>
+                <Text style={styles.label}>Village</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <View style={{ borderWidth: 1, borderColor: '#e5e7eb', borderRadius: 10 }}>
+              <Picker
+                selectedValue={selectedVillageId}
+                onValueChange={(value) => {
+                  const next = String(value);
+                  setSelectedVillageId(next);
+                  setSelectedVillage(next);
+                  setForm(prev => ({
+                    ...prev,
+                    village: getVillageName(next),
+                  }));
+                }}
+                dropdownIconColor="#6e45e2"
+                mode="dropdown"
+                style={{ color: '#6e45e2' }}
+              >
+                {(() => {
+                  const villagesList = selectedMandalId
+                    ? getVillagesByMandal(selectedMandalId)
+                    : getVillagesByDistrict(selectedDistrictId);
+                  if (!villagesList || villagesList.length === 0) {
+                    return (
+                      <Picker.Item
+                        label="No villages configured. Select a mandal or update villages.ts"
+                        value=""
+                        style={{ color: '#6e45e2' }}
+                      />
+                    );
+                  }
+                  return villagesList.map(v => (
+                    <Picker.Item key={v.id} label={v.name} value={v.id} style={{ color: '#6e45e2' }} />
+                  ));
+                })()}
+              </Picker>
+            </View>
+          </View>
+        </View>
 
         {/* Submit Button */}
         <TouchableOpacity 

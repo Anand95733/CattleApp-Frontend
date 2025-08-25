@@ -91,6 +91,14 @@ export const forceMigration = async (): Promise<void> => {
     if (!bCols.includes('aadhaar_id')) await db.executeSql(`ALTER TABLE beneficiaries ADD COLUMN aadhaar_id TEXT`);
     if (!bCols.includes('local_image_path')) await db.executeSql(`ALTER TABLE beneficiaries ADD COLUMN local_image_path TEXT`);
 
+    // Sellers missing columns
+    const [sInfo] = await db.executeSql(`PRAGMA table_info(sellers)`);
+    const sCols: string[] = [];
+    for (let i = 0; i < sInfo.rows.length; i++) sCols.push(sInfo.rows.item(i).name);
+    if (!sCols.includes('aadhaar_id')) await db.executeSql(`ALTER TABLE sellers ADD COLUMN aadhaar_id TEXT`);
+    // Ensure hidden_sellers table exists for helper fns (safe/no-op if unused)
+    await db.executeSql(`CREATE TABLE IF NOT EXISTS hidden_sellers (server_id TEXT PRIMARY KEY)`);
+
     // Cattle missing columns (ensure all expected columns exist with appropriate types)
     const [cInfo] = await db.executeSql(`PRAGMA table_info(cattle)`);
     const cCols: string[] = [];
@@ -293,6 +301,7 @@ export type SellerRow = {
   server_id?: string | null;
   name: string;
   father_or_husband?: string | null;
+  aadhaar_id?: string | null;
   village?: string | null;
   mandal?: string | null;
   district?: string | null;
@@ -308,8 +317,6 @@ export type BeneficiaryRow = {
   server_id?: string | null; // server-side beneficiary_id or UUID
   beneficiary_id?: string | null; // client-provided id (if applicable)
   name: string;
-  father_or_husband?: string | null;
-  aadhaar_id?: string | null;
   village?: string | null;
   mandal?: string | null;
   district?: string | null;

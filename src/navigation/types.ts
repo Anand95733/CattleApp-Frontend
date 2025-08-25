@@ -11,7 +11,7 @@ export type RootStackParamList = {
   AddVisit: { animal_id: string };
   BeneficiaryProfile: { beneficiary_id: string };
   BeneficiaryDetails: { beneficiary_id: string };
-  SellerProfile: { seller_id: string };
+  SellerProfile: { seller_id: string; seller?: any };
   TestAPI: undefined;
   TestConnection: undefined;
   MuzzleDetection: undefined;

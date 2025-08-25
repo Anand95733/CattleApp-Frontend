@@ -12,7 +12,8 @@ import { Picker } from '@react-native-picker/picker';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../../navigation/AppNavigator';
-import { TELANGANA_DATA } from '../../constants/locationData';
+// Using centralized LocationContext data now
+// import { TELANGANA_DATA } from '../../constants/locationData';
 import LinearGradient from 'react-native-linear-gradient';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import { useTheme, useLocation } from '../../contexts';
@@ -22,33 +23,60 @@ type NavigationProp = NativeStackNavigationProp<RootStackParamList>;
 const HomeScreen = () => {
   const navigation = useNavigation<NavigationProp>();
   const { theme } = useTheme();
-  const { locationState } = useLocation();
+  const { locationState, setSelectedDistrict, setSelectedMandal, setSelectedVillage, getAllDistricts, getMandalsByDistrict, getVillagesByMandal } = useLocation();
 
-  const [selectedDistrict, setSelectedDistrict] = useState('');
-  const [selectedMandal, setSelectedMandal] = useState('');
-  const [mandals, setMandals] = useState<string[]>([]);
+  const [selectedDistrict, _setSelectedDistrict] = useState(locationState.selectedDistrict);
+  const [selectedMandal, _setSelectedMandal] = useState(locationState.selectedMandal);
+  const [selectedVillage, _setSelectedVillage] = useState(locationState.selectedVillage);
+  const [mandals, setMandals] = useState<{id: string; name: string}[]>(locationState.mandals);
+  const [villages, setVillages] = useState<{id: string; name: string}[]>(locationState.villages);
 
-  const districtList = Object.keys(TELANGANA_DATA.districts);
+  const districtList = getAllDistricts();
   
   // Create dynamic styles
   const styles = createStyles(theme);
 
+  // Keep local selections in sync with global context (e.g., when changed in other tabs)
   useEffect(() => {
-    if (districtList.length > 0) {
-      const defaultDistrict = districtList[0];
-      setSelectedDistrict(defaultDistrict);
-      setMandals(TELANGANA_DATA.districts[defaultDistrict]);
-      setSelectedMandal(TELANGANA_DATA.districts[defaultDistrict][0]);
+    _setSelectedDistrict(locationState.selectedDistrict);
+    _setSelectedMandal(locationState.selectedMandal);
+    setMandals(locationState.selectedDistrict ? getMandalsByDistrict(locationState.selectedDistrict) : []);
+    setVillages(locationState.selectedMandal ? getVillagesByMandal(locationState.selectedMandal) : []);
+  }, [locationState.selectedDistrict, locationState.selectedMandal]);
+
+  useEffect(() => {
+    // Initialize from context values on mount
+    if (locationState.selectedDistrict) {
+      setMandals(getMandalsByDistrict(locationState.selectedDistrict));
+      if (locationState.selectedMandal) {
+        setVillages(getVillagesByMandal(locationState.selectedMandal));
+      }
     }
   }, []);
 
   useEffect(() => {
-    if (selectedDistrict && TELANGANA_DATA.districts[selectedDistrict]) {
-      const mandalsInDistrict = TELANGANA_DATA.districts[selectedDistrict];
-      setMandals(mandalsInDistrict);
-      setSelectedMandal(mandalsInDistrict[0]);
+    if (selectedDistrict) {
+      const list = getMandalsByDistrict(selectedDistrict);
+      setMandals(list);
+      // Do not auto-select a mandal; let user pick
+      _setSelectedMandal('');
+      setSelectedDistrict(selectedDistrict);
+    } else {
+      setMandals([]);
+      _setSelectedMandal('');
     }
   }, [selectedDistrict]);
+
+  useEffect(() => {
+    if (selectedMandal) {
+      const list = getVillagesByMandal(selectedMandal);
+      setVillages(list);
+      // Do not auto-select village on Home; leave it optional
+      setSelectedMandal(selectedMandal);
+    } else {
+      setVillages([]);
+    }
+  }, [selectedMandal]);
 
   return (
     <View style={styles.container}>
@@ -132,8 +160,7 @@ const HomeScreen = () => {
         </View>
 
         {/* Location Picker */}
-        {/* Location Picker */}
-        <Text style={styles.sectionTitle}>Default Location</Text>
+        <Text style={styles.sectionTitle}>Current Location</Text>
         <View style={styles.locationCard}>
           <View style={styles.pickerGroup}>
             <View style={styles.pickerContainer}>
@@ -149,16 +176,22 @@ const HomeScreen = () => {
               <View style={styles.pickerWrapper}>
                 <Picker
                   selectedValue={selectedDistrict}
-                  onValueChange={(value) => setSelectedDistrict(value)}
+                  onValueChange={(value) => {
+                    const next = String(value);
+                    _setSelectedDistrict(next);
+                    setSelectedDistrict(next);
+                    // Clear dependent selection
+                    _setSelectedMandal('');
+                  }}
                   dropdownIconColor="#6e45e2"
                   style={styles.picker}
                   mode="dropdown"
                 >
-                  {districtList.map((district) => (
+                  {districtList.map((d) => (
                     <Picker.Item 
-                      key={district} 
-                      label={district} 
-                      value={district} 
+                      key={d.id} 
+                      label={d.name} 
+                      value={d.id} 
                       style={styles.pickerItem}
                     />
                   ))}
@@ -171,16 +204,20 @@ const HomeScreen = () => {
               <View style={styles.pickerWrapper}>
                 <Picker
                   selectedValue={selectedMandal}
-                  onValueChange={(value) => setSelectedMandal(value)}
+                  onValueChange={(value) => {
+                    const next = String(value);
+                    _setSelectedMandal(next);
+                    setSelectedMandal(next);
+                  }}
                   dropdownIconColor="#6e45e2"
                   style={styles.picker}
                   mode="dropdown"
                 >
-                  {mandals.map((mandal) => (
+                  {mandals.map((m) => (
                     <Picker.Item 
-                      key={mandal} 
-                      label={mandal} 
-                      value={mandal} 
+                      key={m.id} 
+                      label={m.name} 
+                      value={m.id} 
                       style={styles.pickerItem}
                     />
                   ))}

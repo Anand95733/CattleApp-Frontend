@@ -15,7 +15,7 @@ import { useNavigation } from '@react-navigation/native';
 import { StackNavigationProp } from '@react-navigation/stack';
 import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
-import { useTheme } from '../../contexts';
+import { useTheme, useLocation } from '../../contexts';
 import NetInfo from '@react-native-community/netinfo';
 import { insertBeneficiaryLocal } from '../../database/repositories/beneficiaryRepo';
 import OfflineSyncService from '../../services/OfflineSyncService';
@@ -29,6 +29,15 @@ type AddBeneficiaryScreenNavigationProp = StackNavigationProp<
 const AddBeneficiaryScreen = () => {
   const { theme } = useTheme();
   const navigation = useNavigation<AddBeneficiaryScreenNavigationProp>();
+  const { 
+    locationState,
+    setSelectedDistrict,
+    setSelectedMandal,
+    setSelectedVillage,
+    getAllDistricts,
+    getMandalsByDistrict,
+    getVillagesByMandal
+  } = useLocation();
   
   // Create dynamic styles
   const styles = createStyles(theme);
@@ -36,18 +45,36 @@ const AddBeneficiaryScreen = () => {
   const [form, setForm] = useState({
     beneficiary_id: '',
     name: '',
-    village: '',
-    mandal: '',
-    district: '',
-    state: '',
+    village: locationState.selectedVillage,
+    mandal: locationState.selectedMandal,
+    district: locationState.selectedDistrict,
+    state: 'TS',
     phone_number: '',
     num_of_items: '0',
   });
 
   const [loading, setLoading] = useState(false);
 
+  // Keep form location fields synced with global state
+  useEffect(() => {
+    setForm(prev => ({
+      ...prev,
+      district: locationState.selectedDistrict,
+      mandal: locationState.selectedMandal,
+      village: locationState.selectedVillage,
+    }));
+  }, [locationState.selectedDistrict, locationState.selectedMandal, locationState.selectedVillage]);
+
   const handleChange = (key: string, value: string) => {
     setForm({ ...form, [key]: value });
+    // Sync to global location when relevant fields change
+    if (key === 'district') {
+      setSelectedDistrict(value);
+    } else if (key === 'mandal') {
+      setSelectedMandal(value);
+    } else if (key === 'village') {
+      setSelectedVillage(value);
+    }
   };
 
   const validateForm = () => {
@@ -188,35 +215,44 @@ const AddBeneficiaryScreen = () => {
         contentContainerStyle={styles.scrollContent}
         keyboardShouldPersistTaps="handled"
       >
-        {/* Form Fields */}
-        {Object.keys(form).map((field, index) => (
-          <View key={index} style={styles.inputContainer}>
+        {/* District / Mandal / Village - synced with global */}
+        {(['district','mandal','village'] as const).map((field) => (
+          <View key={field} style={styles.inputContainer}>
             <View style={styles.labelRow}>
-              <Ionicons 
-                name={getIcon(field)} 
-                size={18} 
-                color="#6e45e2" 
-                style={styles.fieldIcon} 
-              />
+              <Ionicons name={getIcon(field)} size={18} color="#6e45e2" style={styles.fieldIcon} />
               <View style={{ flexDirection: 'row' }}>
-                <Text style={styles.label}>
-                  {field.replace(/_/g, ' ')}
-                </Text>
+                <Text style={styles.label}>{field}</Text>
+                <Text style={styles.required}> *</Text>
+              </View>
+            </View>
+            <TextInput
+              placeholder={`Enter ${field}`}
+              placeholderTextColor="#999"
+              value={form[field]}
+              onChangeText={(value) => handleChange(field, value)}
+              style={styles.input}
+            />
+          </View>
+        ))}
+
+        {/* Other Form Fields */}
+        {(['beneficiary_id','name','state','phone_number','num_of_items'] as const).map((field, index) => (
+          <View key={field} style={styles.inputContainer}>
+            <View style={styles.labelRow}>
+              <Ionicons name={getIcon(field)} size={18} color="#6e45e2" style={styles.fieldIcon} />
+              <View style={{ flexDirection: 'row' }}>
+                <Text style={styles.label}>{field.replace(/_/g, ' ')}</Text>
                 {field !== 'num_of_items' && <Text style={styles.required}> *</Text>}
               </View>
             </View>
             <TextInput
               placeholder={`Enter ${field.replace(/_/g, ' ')}`}
               placeholderTextColor="#999"
-              value={form[field as keyof typeof form]}
+              value={form[field]}
               onChangeText={(value) => handleChange(field, value)}
               style={styles.input}
-              keyboardType={
-                field === 'phone_number' || field === 'num_of_items' 
-                  ? 'numeric' 
-                  : 'default'
-              }
-              returnKeyType={index === Object.keys(form).length - 1 ? 'done' : 'next'}
+              keyboardType={field === 'phone_number' || field === 'num_of_items' ? 'numeric' : 'default'}
+              returnKeyType={index === 4 ? 'done' : 'next'}
             />
           </View>
         ))}

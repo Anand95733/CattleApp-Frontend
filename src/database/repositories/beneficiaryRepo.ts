@@ -13,8 +13,6 @@ export const insertBeneficiaryLocal = async (
     server_id TEXT UNIQUE,
     beneficiary_id TEXT UNIQUE,
     name TEXT NOT NULL,
-    father_or_husband TEXT,
-    aadhaar_id TEXT,
     village TEXT,
     mandal TEXT,
     district TEXT,
@@ -37,13 +35,11 @@ export const insertBeneficiaryLocal = async (
     // Update existing record
     await db.executeSql(
       `UPDATE beneficiaries SET 
-         name = ?, father_or_husband = ?, aadhaar_id = ?, village = ?, mandal = ?, district = ?, state = ?, 
+         name = ?, village = ?, mandal = ?, district = ?, state = ?, 
          phone_number = ?, num_of_items = ?, local_image_path = ?, synced = 0, updatedAt = ?
        WHERE beneficiary_id = ?`,
       [
         data.name,
-        data.father_or_husband,
-        data.aadhaar_id,
         data.village,
         data.mandal,
         data.district,
@@ -59,14 +55,12 @@ export const insertBeneficiaryLocal = async (
   } else {
     // Insert new record
     const [result] = await db.executeSql(
-      `INSERT INTO beneficiaries (server_id, beneficiary_id, name, father_or_husband, aadhaar_id, village, mandal, district, state, phone_number, num_of_items, local_image_path, synced, createdAt, updatedAt)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+      `INSERT INTO beneficiaries (server_id, beneficiary_id, name, village, mandal, district, state, phone_number, num_of_items, local_image_path, synced, createdAt, updatedAt)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
       [
         data.server_id || null,
         data.beneficiary_id,
         data.name,
-        data.father_or_husband,
-        data.aadhaar_id,
         data.village,
         data.mandal,
         data.district,

@@ -268,22 +268,22 @@ const BSTabScreen = () => {
         try {
           console.log('🌐 Fetching data from server...');
           
-          // Fetch server data in parallel
+          // Fetch server data in parallel (arrays, no pagination)
           const [beneficiaryData, sellerData] = await Promise.all([
-            apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES, { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }),
-            apiGet(API_CONFIG.ENDPOINTS.SELLERS, { timeout: API_CONFIG.TIMEOUT, useFallbacks: true })
+            apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES_ALL, { timeout: API_CONFIG.TIMEOUT, useFallbacks: true }),
+            apiGet(API_CONFIG.ENDPOINTS.SELLERS_ALL, { timeout: API_CONFIG.TIMEOUT, useFallbacks: true })
           ]);
 
           console.log('✅ Server data received:', {
-            beneficiaries: beneficiaryData?.results?.length ?? 0,
-            sellers: sellerData?.results?.length ?? 0
+            beneficiaries: Array.isArray(beneficiaryData) ? beneficiaryData.length : 0,
+            sellers: Array.isArray(sellerData) ? sellerData.length : 0
           });
 
-          // Set server lists directly (no hidden filters for pure-offline delete)
-          setBeneficiaries(beneficiaryData?.results ?? []);
-          setSellers(sellerData?.results ?? []);
-          setBeneficiaryNextPage(beneficiaryData?.next ?? null);
-          setSellerNextPage(sellerData?.next ?? null);
+          // Set server lists directly
+          setBeneficiaries(Array.isArray(beneficiaryData) ? beneficiaryData : []);
+          setSellers(Array.isArray(sellerData) ? sellerData : []);
+          setBeneficiaryNextPage(null);
+          setSellerNextPage(null);
         } catch (apiError) {
           console.error('❌ API call failed, falling back to local data:', apiError);
           
@@ -447,32 +447,9 @@ const BSTabScreen = () => {
     }, [])
   );
 
-  const loadMoreData = async (type: 'beneficiaries' | 'sellers') => {
-    const nextPage = type === 'beneficiaries' ? beneficiaryNextPage : sellerNextPage;
-    if (!nextPage || loadingMore) return;
-
-    setLoadingMore(true);
-    try {
-      const endpoint = type === 'beneficiaries' ? API_CONFIG.ENDPOINTS.BENEFICIARIES : API_CONFIG.ENDPOINTS.SELLERS;
-      const pageParam = nextPage.split('page=')[1]?.split('&')[0];
-      const url = pageParam ? `${endpoint}?page=${pageParam}` : endpoint;
-
-      const response = await apiGet(url, { 
-        timeout: API_CONFIG.TIMEOUT 
-      });
-
-      if (type === 'beneficiaries') {
-        setBeneficiaries(prev => [...prev, ...(response?.results ?? [])]);
-        setBeneficiaryNextPage(response?.next ?? null);
-      } else {
-        setSellers(prev => [...prev, ...(response?.results ?? [])]);
-        setSellerNextPage(response?.next ?? null);
-      }
-    } catch (error) {
-      console.error(`❌ Failed to load more ${type}:`, error);
-    } finally {
-      setLoadingMore(false);
-    }
+  const loadMoreData = async (_type: 'beneficiaries' | 'sellers') => {
+    // No pagination with new API (/beneficiaries/all, /sellers/all)
+    return;
   };
 
   const handleSearch = (text: string) => {
@@ -594,7 +571,7 @@ const BSTabScreen = () => {
           if (isBeneficiary) {
             navigation.navigate('BeneficiaryProfile', { beneficiary_id: personId });
           } else {
-            navigation.navigate('SellerProfile', { seller_id: personId });
+            navigation.navigate('SellerProfile', { seller_id: personId!, seller: item });
           }
         }}
         onLongPress={() => {

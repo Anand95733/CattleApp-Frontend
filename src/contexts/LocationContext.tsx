@@ -1,4 +1,6 @@
 import React, { createContext, useContext, useState, useEffect, ReactNode } from 'react';
+import AsyncStorage from '@react-native-async-storage/async-storage';
+import { apiGet, API_CONFIG } from '../config/api';
 
 // Telangana districts data
 const telanganaDistricts = [
@@ -643,18 +645,24 @@ interface LocationState {
   selectedState: string;
   selectedDistrict: string;
   selectedMandal: string;
+  selectedVillage: string;
   districts: District[];
   mandals: Mandal[];
+  villages: { id: string; name: string }[];
 }
 
 interface LocationContextType {
   locationState: LocationState;
   setSelectedDistrict: (districtId: string) => void;
   setSelectedMandal: (mandalId: string) => void;
+  setSelectedVillage: (villageId: string) => void;
   getAllDistricts: () => District[];
   getMandalsByDistrict: (districtId: string) => Mandal[];
+  getVillagesByMandal: (mandalId: string) => { id: string; name: string }[];
+  getVillagesByDistrict: (districtId: string) => { id: string; name: string }[];
   getDistrictName: (districtId: string) => string;
   getMandalName: (mandalId: string) => string;
+  getVillageName: (villageId: string) => string;
 }
 
 const LocationContext = createContext<LocationContextType | undefined>(undefined);
@@ -668,25 +676,90 @@ export const LocationProvider: React.FC<LocationProviderProps> = ({ children }) 
     selectedState: 'TS',
     selectedDistrict: '',
     selectedMandal: '',
+    selectedVillage: '',
     districts: telanganaData.districts,
-    mandals: []
+    mandals: [],
+    villages: []
   });
 
-  const setSelectedDistrict = (districtId: string) => {
+  const setSelectedDistrict = async (districtId: string) => {
     const mandals = telanganaData.mandals[districtId as keyof typeof telanganaData.mandals] || [];
+    const firstMandalId = mandals.length ? mandals[0].id : '';
+
+    // If we have a mandal, prefer fetching villages online for best accuracy
+    let villages: { id: string; name: string }[] = [];
+    if (firstMandalId) {
+      try {
+        const data = await apiGet(`${API_CONFIG.ENDPOINTS.VILLAGES}?mandal=${encodeURIComponent(firstMandalId)}`, {
+          cache: true,
+          timeout: API_CONFIG.FAST_TIMEOUT,
+        });
+        if (Array.isArray(data) && data.length) {
+          villages = data.map((v: any) => ({ id: String(v.id), name: String(v.name) }));
+        }
+      } catch {}
+      if (!villages.length) {
+        villages = getVillagesByMandal(firstMandalId);
+      }
+    }
+    const firstVillageId = villages.length ? villages[0].id : '';
+
     setLocationState(prev => ({
       ...prev,
       selectedDistrict: districtId,
-      selectedMandal: '', // Reset mandal when district changes
-      mandals: mandals
+      selectedMandal: firstMandalId,
+      selectedVillage: firstVillageId,
+      mandals,
+      villages
     }));
+    try {
+      await AsyncStorage.setItem('location.selectedDistrict', districtId);
+      if (firstMandalId) {
+        await AsyncStorage.setItem('location.selectedMandal', firstMandalId);
+      } else {
+        await AsyncStorage.removeItem('location.selectedMandal');
+      }
+      if (firstVillageId) {
+        await AsyncStorage.setItem('location.selectedVillage', firstVillageId);
+      } else {
+        await AsyncStorage.removeItem('location.selectedVillage');
+      }
+    } catch {}
   };
 
-  const setSelectedMandal = (mandalId: string) => {
+  const setSelectedMandal = async (mandalId: string) => {
+    // Try fetching villages from backend for the mandal; fallback to local data
+    let villages: { id: string; name: string }[] = [];
+    try {
+      const data = await apiGet(`${API_CONFIG.ENDPOINTS.VILLAGES}?mandal=${encodeURIComponent(mandalId)}`, {
+        cache: true,
+        timeout: API_CONFIG.FAST_TIMEOUT,
+      });
+      if (Array.isArray(data) && data.length) {
+        // Expect each entry to have id and name
+        villages = data.map((v: any) => ({ id: String(v.id), name: String(v.name) }));
+      }
+    } catch {
+      // ignore network errors and fallback
+    }
+    if (!villages.length) {
+      villages = getVillagesByMandal(mandalId);
+    }
+    const firstVillageId = villages.length ? villages[0].id : '';
     setLocationState(prev => ({
       ...prev,
-      selectedMandal: mandalId
+      selectedMandal: mandalId,
+      selectedVillage: firstVillageId,
+      villages
     }));
+    try {
+      await AsyncStorage.setItem('location.selectedMandal', mandalId);
+      if (firstVillageId) {
+        await AsyncStorage.setItem('location.selectedVillage', firstVillageId);
+      } else {
+        await AsyncStorage.removeItem('location.selectedVillage');
+      }
+    } catch {}
   };
 
   const getAllDistricts = (): District[] => {
@@ -697,30 +770,195 @@ export const LocationProvider: React.FC<LocationProviderProps> = ({ children }) 
     return telanganaData.mandals[districtId as keyof typeof telanganaData.mandals] || [];
   };
 
+  const getVillagesByMandal = (mandalId: string): { id: string; name: string }[] => {
+    try {
+      // Prefer JSON if available (lighter to extend)
+      try {
+        const json = require('../constants/villages.json');
+        const fromJson = (json && json[mandalId]) || [];
+        if (fromJson.length > 0) return fromJson;
+      } catch {}
+      const { TELANGANA_VILLAGES } = require('../constants/villages');
+      const configured = TELANGANA_VILLAGES[mandalId] || [];
+      if (configured.length > 0) return configured;
+    } catch {}
+    // Fallback: synthesize a richer list using the mandal name if available
+    const mandalName = getMandalName(mandalId) || 'Village';
+    const count = 8;
+    return Array.from({ length: count }).map((_, idx) => {
+      const n = idx + 1;
+      return { id: `${mandalId}-V${String(n).padStart(2, '0')}`, name: `${mandalName} Village ${n}` };
+    });
+  };
+
+  // Aggregate villages under all mandals in a district
+  const getVillagesByDistrict = (districtId: string): { id: string; name: string }[] => {
+    try {
+      const mandals = getMandalsByDistrict(districtId);
+      // Prefer JSON first for each mandal
+      const all: { id: string; name: string }[] = [];
+      let json: any = null;
+      try { json = require('../constants/villages.json'); } catch {}
+      let tsMap: any = null;
+      try { tsMap = require('../constants/villages').TELANGANA_VILLAGES; } catch {}
+
+      mandals.forEach(m => {
+        const fromJson = json && json[m.id] ? json[m.id] : [];
+        if (fromJson.length) {
+          all.push(...fromJson);
+          return;
+        }
+        const fromTs = tsMap && tsMap[m.id] ? tsMap[m.id] : [];
+        if (fromTs.length) {
+          all.push(...fromTs);
+          return;
+        }
+        // Fallback synthesize
+        for (let i = 1; i <= 8; i++) {
+          const code = String(i).padStart(2, '0');
+          all.push({ id: `${m.id}-V${code}`, name: `${m.name} Village ${i}` });
+        }
+      });
+      return all;
+    } catch {
+      // Fallback: synthesize villages for each mandal if import fails
+      return getMandalsByDistrict(districtId).flatMap(m => ([
+        { id: `${m.id}-V01`, name: `${m.name} Village 1` },
+        { id: `${m.id}-V02`, name: `${m.name} Village 2` },
+        { id: `${m.id}-V03`, name: `${m.name} Village 3` },
+      ]));
+    }
+  };
+
   const getDistrictName = (districtId: string): string => {
     const district = telanganaData.districts.find(d => d.id === districtId);
     return district ? district.name : '';
   };
 
   const getMandalName = (mandalId: string): string => {
-    // Search through all mandals in all districts
     for (const districtMandals of Object.values(telanganaData.mandals)) {
       const mandal = districtMandals.find(m => m.id === mandalId);
-      if (mandal) {
-        return mandal.name;
-      }
+      if (mandal) return mandal.name;
     }
     return '';
   };
+
+  const getVillageName = (villageId: string): string => {
+    try {
+      const { TELANGANA_VILLAGES } = require('../constants/villages');
+      for (const list of Object.values(TELANGANA_VILLAGES)) {
+        const v = (list as {id: string; name: string}[]).find(i => i.id === villageId);
+        if (v) return v.name;
+      }
+    } catch {}
+    // Support synthesized fallback IDs like `${mandalId}-V01`
+    const match = villageId && villageId.match(/^(?<mandalId>[A-Z]{2}\d{2})-V\d{2}$/);
+    if (match && match.groups?.mandalId) {
+      const mandalName = getMandalName(match.groups.mandalId);
+      if (mandalName) return `${mandalName} ${villageId.endsWith('V01') ? 'Village 1' : villageId.endsWith('V02') ? 'Village 2' : 'Village 3'}`;
+    }
+    return '';
+  };
+
+  const setSelectedVillage = async (villageId: string) => {
+    setLocationState(prev => ({
+      ...prev,
+      selectedVillage: villageId
+    }));
+    try {
+      await AsyncStorage.setItem('location.selectedVillage', villageId);
+    } catch {}
+  };
+
+  // Load persisted selection on mount; if none, default to index 0 for each level
+  useEffect(() => {
+    (async () => {
+      try {
+        const [d, m, v] = await Promise.all([
+          AsyncStorage.getItem('location.selectedDistrict'),
+          AsyncStorage.getItem('location.selectedMandal'),
+          AsyncStorage.getItem('location.selectedVillage'),
+        ]);
+        if (d) {
+          const mandals = getMandalsByDistrict(d);
+          let villages: { id: string; name: string }[] = [];
+          let selectedMandal = m || (mandals.length ? mandals[0].id : '');
+          if (selectedMandal) {
+            // Try online villages on boot for better accuracy
+            try {
+              const data = await apiGet(`${API_CONFIG.ENDPOINTS.VILLAGES}?mandal=${encodeURIComponent(selectedMandal)}`, { cache: true, timeout: API_CONFIG.FAST_TIMEOUT });
+              if (Array.isArray(data) && data.length) {
+                villages = data.map((x: any) => ({ id: String(x.id), name: String(x.name) }));
+              }
+            } catch {}
+            if (!villages.length) {
+              villages = getVillagesByMandal(selectedMandal);
+            }
+          }
+          const selectedVillage = v || (villages.length ? villages[0].id : '');
+
+          setLocationState(prev => ({
+            ...prev,
+            selectedDistrict: d,
+            selectedMandal,
+            selectedVillage,
+            mandals,
+            villages,
+          }));
+
+          // Persist computed defaults if they were missing
+          if (!m && selectedMandal) await AsyncStorage.setItem('location.selectedMandal', selectedMandal);
+          if (!v && selectedVillage) await AsyncStorage.setItem('location.selectedVillage', selectedVillage);
+        } else {
+          // No persisted district — choose index 0 for district, mandal, village
+          const districts = getAllDistricts();
+          const selectedDistrict = districts.length ? districts[0].id : '';
+          const mandals = selectedDistrict ? getMandalsByDistrict(selectedDistrict) : [];
+          const selectedMandal = mandals.length ? mandals[0].id : '';
+          let villages: { id: string; name: string }[] = [];
+          if (selectedMandal) {
+            try {
+              const data = await apiGet(`${API_CONFIG.ENDPOINTS.VILLAGES}?mandal=${encodeURIComponent(selectedMandal)}`, { cache: true, timeout: API_CONFIG.FAST_TIMEOUT });
+              if (Array.isArray(data) && data.length) {
+                villages = data.map((x: any) => ({ id: String(x.id), name: String(x.name) }));
+              }
+            } catch {}
+            if (!villages.length) {
+              villages = getVillagesByMandal(selectedMandal);
+            }
+          }
+          const selectedVillage = villages.length ? villages[0].id : '';
+
+          setLocationState(prev => ({
+            ...prev,
+            selectedDistrict,
+            selectedMandal,
+            selectedVillage,
+            districts,
+            mandals,
+            villages,
+          }));
+
+          if (selectedDistrict) await AsyncStorage.setItem('location.selectedDistrict', selectedDistrict);
+          if (selectedMandal) await AsyncStorage.setItem('location.selectedMandal', selectedMandal);
+          if (selectedVillage) await AsyncStorage.setItem('location.selectedVillage', selectedVillage);
+        }
+      } catch {}
+    })();
+  }, []);
 
   const contextValue: LocationContextType = {
     locationState,
     setSelectedDistrict,
     setSelectedMandal,
+    setSelectedVillage,
     getAllDistricts,
     getMandalsByDistrict,
+    getVillagesByMandal,
+    getVillagesByDistrict,
     getDistrictName,
-    getMandalName
+    getMandalName,
+    getVillageName,
   };
 
   return (

@@ -1,0 +1,19 @@
+{
+  "HY05": [
+    { "id": "HY05-V001", "name": "Amberpet" },
+    { "id": "HY05-V002", "name": "Tilak Nagar" },
+    { "id": "HY05-V003", "name": "Kachiguda" }
+  ],
+  "HY07": [
+    { "id": "HY07-V001", "name": "Nampally" },
+    { "id": "HY07-V002", "name": "Abids" }
+  ],
+  "HY13": [
+    { "id": "HY13-V001", "name": "Charminar" },
+    { "id": "HY13-V002", "name": "Laad Bazaar" }
+  ],
+  "HY16": [
+    { "id": "HY16-V001", "name": "Uppal Kalan" },
+    { "id": "HY16-V002", "name": "Habsiguda" }
+  ]
+}

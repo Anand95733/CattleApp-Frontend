@@ -13,7 +13,7 @@ import {
 import { useNavigation } from '@react-navigation/native';
 import Ionicons from 'react-native-vector-icons/Ionicons';
 import LinearGradient from 'react-native-linear-gradient';
-import { useTheme } from '../../contexts';
+import { useTheme, useLocation } from '../../contexts';
 import NetInfo from '@react-native-community/netinfo';
 import { insertSellerLocal } from '../../database/repositories/sellerRepo';
 import OfflineSyncService from '../../services/OfflineSyncService';
@@ -22,6 +22,12 @@ import { API_CONFIG, apiPost } from '../../config/api';
 const AddSellerScreen = () => {
   const { theme } = useTheme();
   const navigation = useNavigation();
+  const { 
+    locationState,
+    setSelectedDistrict,
+    setSelectedMandal,
+    setSelectedVillage,
+  } = useLocation();
   
   // Create dynamic styles
   const styles = createStyles(theme);
@@ -29,10 +35,10 @@ const AddSellerScreen = () => {
   const [form, setForm] = useState({
     name: '',
     father_or_husband: '',
-    village: '',
-    mandal: '',
-    district: '',
-    state: '',
+    village: locationState.selectedVillage,
+    mandal: locationState.selectedMandal,
+    district: locationState.selectedDistrict,
+    state: 'TS',
     phone_number: '',
   });
 
@@ -40,6 +46,9 @@ const AddSellerScreen = () => {
 
   const handleChange = (field: string, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
+    if (field === 'district') setSelectedDistrict(value);
+    if (field === 'mandal') setSelectedMandal(value);
+    if (field === 'village') setSelectedVillage(value);
   };
 
   const validateForm = () => {

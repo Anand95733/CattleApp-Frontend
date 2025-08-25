@@ -86,79 +86,8 @@ const BeneficiaryDetailsScreen = () => {
 
   // Handle save changes
   const handleSave = async () => {
-    if (!editForm) return;
-
-    // Basic validation
-    if (!editForm.name?.trim()) {
-      Alert.alert('Validation Error', 'Name is required');
-      return;
-    }
-    if (!editForm.phone_number || editForm.phone_number.toString().length !== 10) {
-      Alert.alert('Validation Error', 'Phone number must be 10 digits');
-      return;
-    }
-    if (!editForm.aadhaar_id || editForm.aadhaar_id.length !== 12) {
-      Alert.alert('Validation Error', 'Aadhaar ID must be 12 digits');
-      return;
-    }
-
-    setLoading(true);
-    
-    try {
-      console.log('🔄 Updating beneficiary data...');
-      console.log('Original editForm data:', JSON.stringify(editForm, null, 2));
-      
-      // Convert phone_number and animals_sanctioned to numbers
-      const phoneNumber = parseInt(editForm.phone_number.toString());
-      const animalsSanctioned = parseInt(editForm.animals_sanctioned.toString());
-      
-      // Prepare update data - INCLUDE beneficiary_id as required by Django API
-      const updateData = {
-        beneficiary_id: editForm.beneficiary_id, // Include this as required by API
-        name: editForm.name.trim(),
-        father_or_husband: editForm.father_or_husband.trim(),
-        aadhaar_id: editForm.aadhaar_id.trim(),
-        village: editForm.village.trim(),
-        mandal: editForm.mandal.trim(),
-        district: editForm.district.trim(),
-        state: editForm.state.trim(),
-        phone_number: phoneNumber,
-        animals_sanctioned: animalsSanctioned
-      };
-      
-      console.log('Update data being sent:', JSON.stringify(updateData, null, 2));
-      
-      // Use PATCH method for partial updates
-      const updatedData = await apiPatch(`${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}/`, updateData, {
-        timeout: API_CONFIG.TIMEOUT
-      });
-      console.log('✅ Beneficiary updated successfully:', updatedData);
-      
-      setBeneficiary(updatedData);
-      setIsEditing(false);
-      Alert.alert('Success', 'Beneficiary updated successfully');
-      
-    } catch (error) {
-      console.error('❌ Error updating beneficiary:', error);
-      console.error('Error details:', {
-        message: error.message,
-        stack: error.stack,
-        name: error.name
-      });
-      
-      // Better error handling
-      if (error.message.includes('400')) {
-        Alert.alert('Validation Error', 'Please check your input data and try again.');
-      } else if (error.message.includes('404')) {
-        Alert.alert('Error', 'Beneficiary not found.');
-      } else if (error.message.includes('500')) {
-        Alert.alert('Server Error', 'Server error occurred. Please try again later.');
-      } else {
-        Alert.alert('Network Error', 'Cannot connect to server. Please check your connection and try again.');
-      }
-    } finally {
-      setLoading(false);
-    }
+    Alert.alert('Not supported', 'Editing beneficiaries is not available in the current API.');
+    return;
   };
 
   // Render editable field
@@ -199,7 +128,7 @@ const BeneficiaryDetailsScreen = () => {
       try {
         console.log('🔄 Fetching beneficiary details...');
         
-        const data = await apiGet(`${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}/`, {
+        const data = await apiGet(`${API_CONFIG.ENDPOINTS.BENEFICIARIES}${beneficiary_id}`, {
           cache: true,
           timeout: API_CONFIG.FAST_TIMEOUT
         });

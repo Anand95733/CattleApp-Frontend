@@ -25,12 +25,13 @@ export const insertSellerLocal = async (
 
   // Simple insert - sellers don't have a unique client ID like beneficiaries
   const [result] = await db.executeSql(
-    `INSERT INTO sellers (server_id, name, father_or_husband, village, mandal, district, state, phone_number, synced, createdAt, updatedAt)
-     VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
+    `INSERT INTO sellers (server_id, name, father_or_husband, aadhaar_id, village, mandal, district, state, phone_number, synced, createdAt, updatedAt)
+     VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)`,
     [
       data.server_id || null,
       data.name,
       data.father_or_husband,
+      data.aadhaar_id || null,
       data.village,
       data.mandal,
       data.district,

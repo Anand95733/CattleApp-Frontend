@@ -20,6 +20,8 @@ import Clipboard from '@react-native-clipboard/clipboard';
 import { RootStackParamList } from '../../navigation/types';
 import LinearGradient from 'react-native-linear-gradient';
 import { API_CONFIG, apiGet, apiPut } from '../../config/api';
+import { getAllSellers } from '../../database/repositories/sellerRepo';
+import NetInfo from '@react-native-community/netinfo';
 
 LogBox.ignoreAllLogs(true); // Ignore all log notifications
 type ProfileRouteProp = RouteProp<RootStackParamList, 'SellerProfile'>;
@@ -34,7 +36,7 @@ interface Seller {
   mandal: string;
   district: string;
   state: string;
-  phone_number: number;
+  phone_number: string; // keep as string to match API
   seller_image?: string | null;
 }
 
@@ -43,7 +45,7 @@ const { width } = Dimensions.get('window');
 const SellerProfileScreen = () => {
   const route = useRoute<ProfileRouteProp>();
   const navigation = useNavigation<ProfileNavigationProp>();
-  const { seller_id } = route.params;
+  const { seller_id, seller: initialSeller } = route.params as { seller_id: string; seller?: any };
 
   const [loading, setLoading] = useState(true);
   const [seller, setSeller] = useState<Seller | null>(null);
@@ -153,7 +155,7 @@ const SellerProfileScreen = () => {
       console.log('🔄 Updating seller...');
       console.log('Update payload:', payload);
 
-      const updatedSeller = await apiPut(`/api/sellers/${seller_id}/`, payload, {
+      const updatedSeller = await apiPut(`${API_CONFIG.ENDPOINTS.SELLERS}${seller_id}`, payload, {
         timeout: API_CONFIG.TIMEOUT
       });
 
@@ -176,29 +178,123 @@ const SellerProfileScreen = () => {
     }
   };
 
-  // Fetch seller data
-  useEffect(() => {
-    const fetchSeller = async () => {
-      try {
-        setLoading(true);
-        console.log('🔄 Fetching seller profile...');
-        
-        const data = await apiGet(`/api/sellers/${seller_id}/`, {
-          cache: true,
-          timeout: API_CONFIG.FAST_TIMEOUT
-        });
-        
-        console.log('✅ Seller profile loaded successfully');
-        setSeller(data);
-        setEditForm(data);
-      } catch (error) {
-        console.error('❌ Failed to fetch seller:', error);
-        Alert.alert('Network Error', 'Cannot connect to server. Please check your connection and try again.');
-      } finally {
-        setLoading(false);
+  // Fetch seller data function
+  const fetchSeller = async () => {
+    try {
+      setLoading(true);
+      console.log('🔄 Fetching seller profile...');
+      
+      // Check connectivity first
+      const net = await NetInfo.fetch();
+      const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
+      
+      const isLocalId = seller_id.startsWith('local-') || /^\d+$/.test(seller_id);
+      if (isOnline && !isLocalId) {
+        try {
+          // Try to fetch from API first
+          const data = await apiGet(`${API_CONFIG.ENDPOINTS.SELLERS}${seller_id}`, {
+            cache: true,
+            timeout: API_CONFIG.FAST_TIMEOUT
+          });
+          
+          console.log('✅ Seller profile loaded from server');
+          setSeller(data);
+          setEditForm(data);
+          return;
+        } catch (apiError) {
+          console.log('⚠️ API failed, trying local fallback...');
+          // Fall through to local fallback
+        }
       }
-    };
+      
+      // Try to find seller in local database
+      console.log('📱 Searching local database for seller...');
+      const localSellers = await getAllSellers();
+      const normalizedId = seller_id.startsWith('local-') ? seller_id.slice(6) : seller_id;
+      const localSeller = localSellers.find(s => 
+        s.server_id === seller_id || 
+        String(s.local_id) === normalizedId
+      );
+      
+      if (localSeller) {
+        console.log('✅ Seller found in local database');
+        const sellerData: Seller = {
+          seller_id: localSeller.server_id || String(localSeller.local_id),
+          name: localSeller.name,
+          father_or_husband: localSeller.father_or_husband,
+          aadhaar_id: localSeller.aadhaar_id || '',
+          village: localSeller.village,
+          mandal: localSeller.mandal,
+          district: localSeller.district,
+          state: localSeller.state,
+          phone_number: String(localSeller.phone_number || ''),
+          seller_image: null,
+        };
+        setSeller(sellerData);
+        setEditForm(sellerData);
+        return;
+      }
+      
+      // If no seller found anywhere, show error
+      throw new Error('Seller not found in server or local database');
+      
+    } catch (error) {
+      console.error('❌ Failed to fetch seller:', error);
+      
+      // If we already have some data on screen, don't disturb the user with a popup
+      if (seller || editForm || initialSeller) {
+        return;
+      }
+      
+      // Show a more user-friendly error with options
+      Alert.alert(
+        'Unable to Load Seller Profile',
+        'The seller profile could not be found. This might be due to a server issue or the seller may not exist.',
+        [
+          {
+            text: 'Go Back',
+            style: 'cancel',
+            onPress: () => navigation.goBack(),
+          },
+          {
+            text: 'Retry',
+            onPress: () => {
+              // Retry fetching
+              fetchSeller();
+            },
+          },
+        ]
+      );
+    } finally {
+      setLoading(false);
+    }
+  };
 
+  // Seed from navigation param if provided for instant UI
+  useEffect(() => {
+    if (initialSeller) {
+      const seeded: Seller = {
+        seller_id: String(initialSeller.seller_id || initialSeller.server_id || seller_id),
+        name: initialSeller.name || '',
+        father_or_husband: initialSeller.father_or_husband || '',
+        aadhaar_id: initialSeller.aadhaar_id || '',
+        village: initialSeller.village || '',
+        mandal: initialSeller.mandal || '',
+        district: initialSeller.district || '',
+        state: initialSeller.state || '',
+        phone_number: String(initialSeller.phone_number || ''),
+        seller_image: null,
+      };
+      setSeller(seeded);
+      setEditForm(seeded);
+      setLoading(false); // show UI immediately
+    }
+    // Decide whether to fetch
+    const isLocalId = seller_id.startsWith('local-') || /^\d+$/.test(seller_id);
+    if (initialSeller && isLocalId) {
+      // For local IDs with provided data, skip fetch to avoid unnecessary errors
+      return;
+    }
     fetchSeller();
   }, [seller_id]);
 

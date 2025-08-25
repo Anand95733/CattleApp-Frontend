@@ -45,13 +45,13 @@ const BeneficiaryListScreen = () => {
         const isOnline = Boolean(net.isConnected && net.isInternetReachable !== false);
         if (isOnline) {
           console.log('🔄 Fetching beneficiaries (online)...');
-          const data = await apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES, { 
+          const data = await apiGet(API_CONFIG.ENDPOINTS.BENEFICIARIES_ALL, { 
             cache: true, 
             timeout: API_CONFIG.FAST_TIMEOUT 
           });
-          const results = data?.results || data || [];
-          const next = data?.next || null;
-          setBeneficiaries(Array.isArray(results) ? results : []);
+          const results = Array.isArray(data) ? data : [];
+          const next = null;
+          setBeneficiaries(results as any);
           setNextPage(next);
           console.log(`📊 Loaded ${results.length} beneficiaries`);
         } else {
@@ -89,37 +89,9 @@ const BeneficiaryListScreen = () => {
     fetchInitialBeneficiaries();
   }, []);
 
-  // Function to load more beneficiaries
+  // Function to load more beneficiaries (disabled - API returns full array without pagination)
   const loadMoreBeneficiaries = async () => {
-    if (!nextPage || loadingMore) return;
-    
-    setLoadingMore(true);
-    
-    try {
-      console.log('🔄 Loading more beneficiaries...');
-      
-      // Extract endpoint from nextPage URL
-      const url = new URL(nextPage.replace('http://127.0.0.1:8000', API_CONFIG.BASE_URL)
-                                  .replace('http://localhost:8000', API_CONFIG.BASE_URL));
-      const endpoint = url.pathname + url.search;
-      
-      const data = await apiGet(endpoint, { 
-        cache: false, 
-        timeout: API_CONFIG.FAST_TIMEOUT 
-      });
-      
-      const newResults = data?.results || [];
-      const next = data?.next || null;
-      
-      setBeneficiaries(prev => [...prev, ...newResults]);
-      setNextPage(next);
-      
-      console.log(`✅ Loaded ${newResults.length} more beneficiaries`);
-    } catch (error) {
-      console.error('❌ Error loading more beneficiaries:', error);
-    } finally {
-      setLoadingMore(false);
-    }
+    return; // No-op with new API
   };
 
   const filteredBeneficiaries = beneficiaries.filter((item) =>
